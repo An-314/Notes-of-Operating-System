@@ -25,5 +25,5 @@ $(BUILD_DIR)/HW/%.pdf: HW/%/main.typ
 	typst compile $< $@
 
 clean:
-	rm -f $(MAIN_PDF) $(HW_PDF)
+	rm -rf $(BUILD_DIR)
 
