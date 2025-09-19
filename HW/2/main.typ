@@ -388,3 +388,216 @@ exit_group(0)                           = ?
 
 + `+++ exited with 0 +++`
 
+== echo.c
+
+```log
+write(1, "hello", 5)                    = 5
+write(1, " ", 1)                        = 1
+write(1, "world", 5)                    = 5
+write(1, "\n", 1)                       = 1
+exit_group(0)                           = ?
++++ exited with 0 +++
+```
+
+== exec.c
+
+```log
+execve("bin/exec", ["bin/exec"], 0x7fff0b638360 /* 91 vars */) = 0
+execve("/usr/local/sbin/echo", ["echo", "this", "is", "echo"], 0x7ffe0f0fdb78 /* 91 vars */) = -1 ENOENT (没有那个文件或目录)
+execve("/usr/local/bin/echo", ["echo", "this", "is", "echo"], 0x7ffe0f0fdb78 /* 91 vars */) = -1 ENOENT (没有那个文件或目录)
+execve("/usr/bin/echo", ["echo", "this", "is", "echo"], 0x7ffe0f0fdb78 /* 91 vars */) = 0
+write(1, "this is echo\n", 13)          = 13
+exit_group(0)                           = ?
++++ exited with 0 +++
+```
+
+== fork.c
+
+```log
+3349944 clone(child_stack=NULL, flags=CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|SIGCHLD, child_tidptr=0x7f6053e2aa10) = 3349945
+3349944 write(1, "fork() returned 3349945\n", 24) = 24
+3349944 write(1, "parent\n", 7)         = 7
+3349944 exit_group(0)                   = ?
+3349945 write(1, "fork() returned 0\n", 18) = 18
+3349945 write(1, "child\n", 6 <unfinished ...>
+3349944 +++ exited with 0 +++
+3349945 <... write resumed>)            = 6
+3349945 exit_group(0)                   = ?
+3349945 +++ exited with 0 +++
+```
+
+== forkexec.c
+
+```log
+3355350 execve("bin/forkexec", ["bin/forkexec"], 0x7fff32bfaf38 /* 91 vars */) = 0
+3355350 clone(child_stack=NULL, flags=CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|SIGCHLD, child_tidptr=0x7fd1e78dfa10) = 3355351
+3355350 write(1, "parent waiting\n", 15 <unfinished ...>
+3355351 execve("/usr/local/sbin/echo", ["echo", "THIS", "IS", "ECHO"], 0x7ffd079aba18 /* 91 vars */ <unfinished ...>
+3355350 <... write resumed>)            = 15
+3355351 <... execve resumed>)           = -1 ENOENT (没有那个文件或目录)
+3355350 wait4(-1 <unfinished ...>
+3355351 execve("/usr/local/bin/echo", ["echo", "THIS", "IS", "ECHO"], 0x7ffd079aba18 /* 91 vars */) = -1 ENOENT (没有那个文件或目录)
+3355351 execve("/usr/bin/echo", ["echo", "THIS", "IS", "ECHO"], 0x7ffd079aba18 /* 91 vars */) = 0
+3355351 write(1, "THIS IS ECHO\n", 13)  = 13
+3355351 exit_group(0)                   = ?
+3355351 +++ exited with 0 +++
+3355350 <... wait4 resumed>, [{WIFEXITED(s) && WEXITSTATUS(s) == 0}], 0, NULL) = 3355351
+3355350 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=3355351, si_uid=1000, si_status=0, si_utime=0, si_stime=0} ---
+3355350 write(1, "the child exited with status 0\n", 31) = 31
+3355350 exit_group(0)                   = ?
+3355350 +++ exited with 0 +++
+```
+
+== list.c
+
+```log
+openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3
+close(3)                                = 0
+openat(AT_FDCWD, "/usr/lib/libc.so.6", O_RDONLY|O_CLOEXEC) = 3
+read(3, "\177ELF\2\1\1\3\0\0\0\0\0\0\0\0\3\0>\0\1\0\0\0000x\2\0\0\0\0\0"..., 832) = 832
+close(3)                                = 0
+openat(AT_FDCWD, ".", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 3
+getdents64(3, 0x55abb08e1040 /* 9 entries */, 32768) = 248
+write(1, "makefile\n", 9)               = 9
+write(1, ".gitignore\n", 11)            = 11
+write(1, "strace.sh\n", 10)             = 10
+write(1, "log\n", 4)                    = 4
+write(1, "src\n", 4)                    = 4
+write(1, "..\n", 3)                     = 3
+write(1, ".\n", 2)                      = 2
+write(1, "bin\n", 4)                    = 4
+write(1, "main.typ\n", 9)               = 9
+getdents64(3, 0x55abb08e1040 /* 0 entries */, 32768) = 0
+close(3)                                = 0
+exit_group(0)                           = ?
++++ exited with 0 +++
+```
+
+== open.c
+
+```log
+openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3
+close(3)                                = 0
+openat(AT_FDCWD, "/usr/lib/libc.so.6", O_RDONLY|O_CLOEXEC) = 3
+close(3)                                = 0
+openat(AT_FDCWD, "output.txt", O_WRONLY|O_CREAT|O_TRUNC, 0644) = 3
+write(3, "ooo\n", 4)                    = 4
+close(3)                                = 0
++++ exited with 0 +++
+```
+
+== pipe1.c
+
+```log
+close(3)                                = 0
+read(3, "\177ELF\2\1\1\3\0\0\0\0\0\0\0\0\3\0>\0\1\0\0\0000x\2\0\0\0\0\0"..., 832) = 832
+close(3)                                = 0
+pipe2([3, 4], 0)                        = 0
+write(4, "this is pipe1\n", 14)         = 14
+read(3, "this is pipe1\n", 100)         = 14
+write(1, "this is pipe1\n", 14)         = 14
+exit_group(0)                           = ?
++++ exited with 0 +++
+```
+
+== pipe2.c
+
+```log
+3374318 close(3)                        = 0
+3374318 read(3, "\177ELF\2\1\1\3\0\0\0\0\0\0\0\0\3\0>\0\1\0\0\0000x\2\0\0\0\0\0"..., 832) = 832
+3374318 close(3)                        = 0
+3374318 clone(child_stack=NULL, flags=CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|SIGCHLD, child_tidptr=0x7f0cac964a10) = 3374319
+3374318 read(3 <unfinished ...>
+3374319 write(4, "this is pipe2\n", 14 <unfinished ...>
+3374318 <... read resumed>, "this is pipe2\n", 100) = 14
+3374319 <... write resumed>)            = 14
+3374318 write(1, "this is pipe2\n", 14) = 14
+3374319 exit_group(0 <unfinished ...>
+3374318 exit_group(0 <unfinished ...>
+3374319 <... exit_group resumed>)       = ?
+3374318 <... exit_group resumed>)       = ?
+3374319 +++ exited with 0 +++
+3374318 +++ exited with 0 +++
+```
+
+== redirect.c
+
+```log
+3374326 execve("bin/redirect", ["bin/redirect"], 0x7ffcdfca19c8 /* 91 vars */) = 0
+3374326 openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3
+3374326 close(3)                        = 0
+3374326 openat(AT_FDCWD, "/usr/lib/libc.so.6", O_RDONLY|O_CLOEXEC) = 3
+3374326 close(3)                        = 0
+3374326 clone(child_stack=NULL, flags=CLONE_CHILD_CLEARTID|CLONE_CHILD_SETTID|SIGCHLD, child_tidptr=0x7f605b74ea10) = 3374327
+3374326 wait4(-1 <unfinished ...>
+3374327 close(1)                        = 0
+3374327 openat(AT_FDCWD, "output.txt", O_WRONLY|O_CREAT|O_TRUNC, 0644) = 1
+3374327 execve("/usr/local/sbin/echo", ["echo", "this", "is", "redirected", "echo"], 0x7ffc965b4788 /* 91 vars */) = -1 ENOENT (没有那个文件或目录)
+3374327 execve("/usr/local/bin/echo", ["echo", "this", "is", "redirected", "echo"], 0x7ffc965b4788 /* 91 vars */) = -1 ENOENT (没有那个文件或目录)
+3374327 execve("/usr/bin/echo", ["echo", "this", "is", "redirected", "echo"], 0x7ffc965b4788 /* 91 vars */) = 0
+3374327 openat(AT_FDCWD, "/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = 3
+3374327 close(3)                        = 0
+3374327 openat(AT_FDCWD, "/usr/lib/libc.so.6", O_RDONLY|O_CLOEXEC) = 3
+3374327 close(3)                        = 0
+3374327 openat(AT_FDCWD, "/usr/lib/locale/locale-archive", O_RDONLY|O_CLOEXEC) = 3
+3374327 close(3)                        = 0
+3374327 write(1, "this is redirected echo\n", 24) = 24
+3374327 close(1)                        = 0
+3374327 close(2)                        = 0
+3374327 exit_group(0)                   = ?
+3374327 +++ exited with 0 +++
+3374326 <... wait4 resumed>, NULL, 0, NULL) = 3374327
+3374326 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=3374327, si_uid=1000, si_status=0, si_utime=0, si_stime=0} ---
+3374326 exit_group(0)                   = ?
+3374326 +++ exited with 0 +++
+```
+
+== strace.sh
+
+```bash
+#!/bin/bash
+
+##### copy #####
+echo -e "hello\nworld" | strace -o log/copy.log bin/copy
+
+##### echo #####
+strace -o log/echo.log bin/echo "hello world"
+
+##### exec #####
+strace -o log/exec.log bin/exec
+strace -e trace=execve,write,exit_group -o log/exec.short.log bin/exec
+
+##### fork #####
+strace -o log/fork.log bin/fork
+strace -f -e trace=clone,clone3,fork,vfork,write,exit_group -o log/fork.short.log bin/fork
+
+##### forkexec #####
+strace -o log/forkexec.log bin/forkexec
+strace -f \
+  -e trace=clone,clone3,fork,vfork,execve,wait4,write,exit_group \
+  -o log/forkexec.short.log \
+  bin/forkexec
+
+##### list #####
+strace -o log/list.log bin/list
+strace -e trace=openat,getdents64,read,close,write,exit_group -o log/list.short.log bin/list
+
+##### open #####
+strace -o log/open.log bin/open
+strace -e trace=openat,write,close -o log/open.short.log bin/open
+
+##### pipe1 #####
+strace -o log/pipe1.log bin/pipe1
+strace -e trace=pipe,pipe2,read,write,close,exit_group -o log/pipe1.short.log bin/pipe1
+
+##### pipe2 #####
+strace -o log/pipe2.log bin/pipe2
+strace -f -e trace=pipe,clone,clone3,fork,read,write,close,exit_group -o log/pipe2.short.log bin/pipe2
+
+##### redirect #####
+strace -o log/redirect.log bin/redirect
+strace -f \
+  -e trace=clone,clone3,fork,close,openat,execve,write,wait4,exit_group \
+  -o log/redirect.short.log \
+  bin/redirect
+```

@@ -1,4 +1,5 @@
 *.pdf
 *.log
+*.txt
 bin/
 log/
