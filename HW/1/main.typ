@@ -2,7 +2,7 @@
 
 #show: scripst.with(
   title: [操作系统第1次作业],
-  author: "刘骥安 2022013054",
+  author: "Anzreww",
   time: "2025/9/18",
   contents: true,
 )
