@@ -24,7 +24,6 @@
   preface: preface,
 )
 
-
 #include "chap1.typ"
 
 #pagebreak()
