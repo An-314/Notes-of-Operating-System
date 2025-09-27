@@ -29,3 +29,7 @@
 #pagebreak()
 
 #include "chap2.typ"
+
+#pagebreak()
+
+#include "chap3.typ"
