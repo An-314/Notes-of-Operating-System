@@ -751,7 +751,41 @@ QEMU 模拟的启动流程则可以分为三个阶段：
 - ABI: Application Binary Interface
 - SBI: Supervisor Binary Interface
 #note(subname: [API和ABI])[
-
+  - API (Application Programming Interface)
+    - API 是应用程序编程接口，定义了软件组件之间如何交互
+    - 源码级
+    - API 通常是函数签名、数据结构、调用约定的集合
+    - 例子：
+      - C 标准库的 `printf` 函数
+      - 操作系统的系统调用接口（如 Linux 的 `open`, `read`, `write`）
+  - ABI (Application Binary Interface)
+    - ABI 是应用程序二进制接口，定义了二进制代码如何与操作系统和硬件交互
+    - 二进制级
+    - ABI 包括：
+      - 数据类型的大小和对齐方式
+      - 函数调用约定（参数传递、返回值、栈布局）
+      - 系统调用约定
+      - 二进制文件格式（如 ELF）
+  - SBI (Supervisor Binary Interface)
+    - SBI 是 RISC-V 架构下的一个标准接口，定义了操作系统内核与底层固件（如 OpenSBI）之间的交互方式
+    - OS ↔ 硬件固件
+    - 作用：
+      - 提供一组调用约定，让内核可以请求底层固件执行特权操作（如启动其他 CPU 核心、管理电源、处理异常）
+      - 抽象底层硬件细节，使内核代码更可移植
+    - 例子：
+      - `sbi_console_putchar`：通过 SBI 接口向控制台输出一个字符
+      - `sbi_set_timer`：设置定时器中断
+  ```
+  用户代码 (App)
+   ↓ API (源码接口，例如 printf)
+  标准库/系统调用封装
+    ↓ ABI (二进制接口：参数寄存器、syscall号、ELF格式)
+  操作系统内核 (Linux, etc.)
+    ↓ SBI (RISC-V 专有: OS 调用底层固件)
+  固件 (OpenSBI)
+    ↓
+  硬件 (CPU, 内存, I/O)
+  ```
 ]
 *分析执行细节*
 - 在机器级层面理解函数
@@ -761,27 +795,498 @@ QEMU 模拟的启动流程则可以分为三个阶段：
   - 函数序言/收尾(prologue/epilogue)
 OS不总是软件的最底层
 
+#note(subname: [在机器级层面理解函数])[
+
+  当我们在高级语言里写：
+
+  ```c
+  int add(int a, int b) {
+      return a + b;
+  }
+
+  int main() {
+      int x = add(2, 3);
+      return x;
+  }
+  ```
+
+  编译成汇编（x86-64）后会涉及几个关键点：
+
+  + 寄存器 (Registers)
+    - *作用*：保存函数参数、局部变量、返回值、临时数据。
+    - *例子*（SysV ABI, x86-64 Linux）：
+      - 前 6 个整型参数放在 `rdi, rsi, rdx, rcx, r8, r9`
+      - 返回值放在 `rax`
+    调用 `add(2,3)` 时：
+    - `rdi = 2`
+    - `rsi = 3`
+    - 调用后结果在 `rax`
+  + 函数调用 / 返回 (call / ret)
+    - `call label`：
+      - 把 *返回地址* 压栈（当前 PC 下一条指令的地址）
+      - 跳转到函数入口地址
+    - `ret`：
+      - 从栈顶弹出返回地址到 PC
+      - 程序继续在调用点之后执行
+    - *核心：返回地址保存在栈里*
+  + 函数进入 / 离开 (enter / exit)
+    - 函数被调用后，需要准备局部环境（栈帧）：
+      - *进入 (enter)*：
+        - 保存旧的帧指针 (BP)
+        - 设置新的帧指针 (BP = SP)
+        - 在栈上留出空间给局部变量
+      - *离开 (exit)*：
+        - 恢复旧的帧指针 (pop bp)
+        - 恢复栈指针 (sp = bp)
+  + 函数序言 / 收尾 (prologue / epilogue)
+    - *序言 (prologue)*：进入函数时的固定套路。
+      ```asm
+      push rbp      ; 保存上一个函数的栈帧基址
+      mov rbp, rsp  ; 设置当前函数的栈帧基址
+      sub rsp, 16   ; 在栈上留 16 字节空间给局部变量
+      ```
+    - *收尾 (epilogue)*：退出函数时的套路。
+      ```asm
+      mov rsp, rbp  ; 恢复 rsp 到进入函数时的位置
+      pop rbp       ; 弹出调用者的 rbp
+      ret           ; 弹出返回地址到 rip (PC)，跳回调用点
+      ```
+]
+
 === 内存布局
 
-bss段
-- bss段（bss segment）通常是指用来存放程序中未初始化的全局变量的一块内存区域
-- bss是英文Block Started by Symbol的简称
-- bss段属于静态内存分配
-data段
-- 数据段（data segment）通常是指用来存放程序中已初始化的全局变量的一块内存区域
-- 数据段属于静态内存分配
-text段
-- 代码段（code segment/text segment）是指存放执行代码的内存区域
-- 这部分区域的大小确定，通常属于只读
-- 在代码段中，也有可能包含一些只读的常数变量(?)
-堆（heap）
-- 堆是用于动态分配的内存段，可动态扩张或缩减
-- 程序调用malloc等函数新分配的内存被动态添加到堆上
-- 调用free等函数释放的内存从堆中被剔除
-栈(stack)
-- 栈又称堆栈，是用户存放程序临时创建的局部变量
-- 函数被调用时，其参数和函数的返回值也会放到栈中
-- 由于栈的先进后出特点，所以栈特别方便用来保存/恢复当前执行状态
-- 可以把堆栈看成一个寄存和交换临时数据的内存区
-OS编程与应用编程的一个显著区别是，OS编程需要理解栈上的物理内存结构和机器级内容（相关寄存器和指令）。
+#figure(
+  image("pic/2025-09-25-01-28-45.png", width: 80%),
+  numbering: none,
+)
 
+bss段
+- bss段（bss segment）通常是指用来存放程序中*未初始化的全局变量*的一块内存区域
+- bss是英文Block Started by Symbol的简称
+- bss段属于*静态内存分配*
+data段
+- 数据段（data segment）通常是指用来存放程序中*已初始化的全局变量*的一块内存区域
+- 数据段属于*静态内存分配*
+text段
+- 代码段（code segment/text segment）是指存放*执行代码*的内存区域
+- 这部分区域的大小确定，通常属于*只读*
+- 在代码段中，也有可能包含一些*只读的常数变量*
+堆（heap）
+- 堆是用于*动态分配*的内存段，可动态扩张或缩减
+- 程序调用`malloc`等函数新分配的内存被动态添加到堆上
+- 调用`free`等函数释放的内存从堆中被剔除
+栈(stack)
+- 栈又称堆栈，是用户存放程序临时创建的*局部变量*
+- 函数被调用时，其*参数*和函数的*返回值*也会放到栈中
+- 由于栈的*先进后出*特点，所以栈特别方便用来保存/恢复当前执行状态
+- 可以把堆栈看成一个*寄存和交换临时数据*的内存区
+OS编程与应用编程的一个显著区别是，OS编程需要理解*栈上的物理内存结构和机器级内容*（相关寄存器和指令）
+
+*链接时的内存布局定制*
+```
+OUTPUT_ARCH(riscv)     // 目标架构是 RISC-V，给链接器/objcopy等参考
+ENTRY(_start)          // 程序入口符号，启动时跳到 _start
+
+BASE_ADDRESS = 0x80200000; // 映射/加载起始地址（QEMU virt + OpenSBI 常见内核基址）
+
+SECTIONS
+{
+    . = BASE_ADDRESS;  // “位置计数器” .= 当前输出地址，从 0x80200000 开始
+    skernel = .;       // 导出一个符号：内核起始地址（供调试/打印）
+
+    stext = .;         // 记录.text起始（通常给异常表/日志用）
+    .text : {
+      *(.text.entry)   // 先把引导/入口代码（.text.entry）放最前面，保证 _start 靠前
+      /* 通常还会把普通代码也放进来：*(.text .text.*) */
+    }
+
+    .bss : {
+        *(.bss.stack)  // 把你为各核预留的栈数组等放进来（未初始化，运行时清零）
+        sbss = .;      // 记录BSS清零起点
+        *(.bss .bss.*) // 常规未初始化全局/静态变量
+        *(.sbss .sbss.*) // “small bss”，小型未初始化全局/静态变量（见下文）
+        /* 通常会再放一个 ebss = .; 作为清零终点 */
+    }
+}
+```
+- BSS：Block Started by Symbol
+- SBSS：small bss，近数据，即使用短指针（near）寻址的数据
+
+*生成内核二进制镜像*
+#figure(
+  image("pic/2025-09-25-01-35-02.png", width: 80%),
+  numbering: none,
+)
+```bash
+rust-objcopy --strip-all \
+  target/riscv64gc-unknown-none-elf/release/os \
+  -O binary target/riscv64gc-unknown-none-elf/release/os.bin
+```
+实验使用`rust-objcopy`把 ELF 格式的内核文件转换成纯二进制格式，变成扁平镜像，直接加载到内存运行（这时没有 ELF 加载器，只能用扁平镜像）
+
+=== 函数调用
+
+*call/return伪指令*
+
+#three-line-table[
+  | 伪指令 | 基本指令 | 含义 |
+  | --- | --- | --- |
+  | `call offset` | `auipc x6, offset[31:12]; jalr x1, x6, offset[11:0]` | 调用 |
+  | `ret` | `jalr x0, x1, 0`(`jalr rd, rs1, imm`) | 返回 |
+]
+函数调用核心机制：
+- 在函数调用时，通过 `call` 伪指令保存返回地址并实现跳转；
+- 在函数返回时，通过 `ret` 伪指令回到跳转之前的下一条指令继续执行
+  - `auipc(add upper immediate to pc)`被用来构建 PC 相对的地址，使用的是 U 型立即数。`auipc`将 `offset` 的高 20 位（即 `offset[31:12]`）与当前 PC 相加，并将结果存储到寄存器 `x6` 中。
+  - `jalr x1, x6, offset[11:0]` 将 `x6` 中的基址与 `offset` 的低 12 位（即 `offset[11:0]`）相加，得到完整的跳转地址。
+  - 同时，把下一条指令的地址（即 PC + 4）存入 `x1` 寄存器。
+  - 伪指令 `ret` （`jalr x0, x1, 0`） 翻译为 `jalr x0, 0(x1)`，含义为跳转到寄存器 `ra`(即`x1`)保存的返回地址。
+
+
+#note[
+  RISC-V 指令集没有专门的“call/ret”硬件指令，而是通过组合 `auipc` 和 `jalr` 指令来实现函数调用和返回
+  - `call` 用 `auipc+t1+jarl` 实现，效果是跳到函数入口并保存返回地址到`ra (x1)`
+    - `auipc t1, hi20(target - pc)`：把“目标地址对 PC 的高 20 位差值”加到 PC 上，放到 `t1`
+    - `jalr ra, t1, lo12(target - pc)`：用 `t1 + 低 12 位` 得到准确目标地址并跳转；同时把返回地址写进 `ra(x1)`
+    - 这样做的好处：位置无关，不依赖绝对地址，ELF 装载到哪里都能跑；同时解决了立即数位宽不够的问题（高 20 + 低 12 组合）
+  - `ret` 就是无条件跳转到 `ra`，继续执行调用点的下一条指令
+  - 调用时 (call)：
+    - 跳到函数入口；
+    - 保存返回地址到 ra。
+  - 返回时 (ret)：
+    - 读取 ra；
+    - 跳回原来的调用点之后继续执行。
+]
+#note(subname: [涉及到的寄存器])[
+  - `x1` (`ra`, return address)
+    - 专门用来保存函数调用的返回地址
+    - 当执行 `jal` 或 `jalr` 时，硬件会自动把“下一条指令的地址 (PC+4)”写入 `ra`
+    - `ret` 实际就是“跳转到 `ra` 里的地址”
+  - `x6` (`t1`, 临时寄存器)
+    - 调用伪指令 `call` 背后用它来拼接跳转目标地址。
+    - 因为 `auipc` + `jalr` 是 RISC-V 的“PC 相对跳转”组合：`auipc` 得到目标地址的高 20 位，`jalr` 再加上低 12 位
+    - `t1` 是临时寄存器，ABI 规定调用者不需要保存它，所以编译器/汇编器能安全拿来做中转
+]
+
+#note(subname: [一些组成原理的知识])[
+  - 立即数（immediate）
+    - 就是指令里直接写死的常数，不需要再去内存取
+    - 作用：做加减、比较、构造地址的偏移等
+    - 在 RISC-V 里按指令格式不同有不同位宽：
+      - I 型（`addi/jalr/lw…`）→ 12 位有符号立即数
+      - S/B 型（store/branch）→ 也是 12 位、编码方式不同
+      - U 型（`lui/auipc`）→ 高 20 位立即数
+      - J 型（`jal`）→ 用一个较大的立即数做相对跳转（范围受限）
+  - 基址（base）
+    - 参加地址计算的“基准地址”寄存器，再加上一个立即数偏移得到有效地址：`有效地址 = 基址寄存器 + 立即数偏移`
+    - 常见基址寄存器：
+      - `sp(x2)`：栈顶；访问局部变量/溢出参数 → 以 `sp` 为基址
+      - `s0/fp(x8)`：帧指针；以固定偏移访问当前函数的局部/参数更方便
+      - `gp(x3)`：全局指针；访问 small data/sbss（近数据）时做基址，提高效率
+      - `pc(x0)`：程序计数器；配合 `auipc` 做 PC 相对寻址（取常量/跳转/定位表）
+      - 临时寄存器 `t1(x6)`：汇编器展开 `call` 时用来临时拼地址。
+]
+
+#note(subname: [一次完整的函数的过程（RV64，SysV ABI）])[
+  以 `long add(long a, long b)` 为例，调用约定：
+  - 参数寄存器：`a0..a7`（多了就放栈上）
+  - 返回值：`a0`（必要时还用 `a1`）
+  - 返回地址：`ra(x1)`
+  - 栈：向低地址增长；16 字节对齐
+  - caller-saved：`t0..t6`, `a0..a7`（调用前要自己保存）
+  - callee-saved：`s0..s11`（被调函数若用到必须入栈保存再恢复）
+  - 帧指针：`s0/fp`
+  *调用点（caller）*
+  ```asm
+  # 假设 a 和 b 已经在 a0, a1
+  call add          # 伪指令 → auipc t1, ... ; jalr ra, t1, ...
+  # 返回后，结果在 a0
+  ```
+  *被调函数 add（callee）*
+  ```asm
+  # --- 序言 Prologue ---
+  add:
+    addi  sp, sp, -16     # 栈上腾 16B（对齐 + 保存位）
+    sd    ra, 8(sp)       # 保存返回地址（非叶子函数一定要保存）
+    sd    s0, 0(sp)       # 如果用到帧指针/保存寄存器就压栈
+    addi  s0, sp, 16      # 设定帧指针（可选，便于固定偏移访问）
+
+  # --- 函数体 ---
+    add   a0, a0, a1      # a0 = a0 + a1  （结果直接放返回寄存器 a0）
+
+  # --- 收尾 Epilogue ---
+    ld    s0, 0(sp)
+    ld    ra, 8(sp)
+    addi  sp, sp, 16
+    ret                   # jalr x0, ra, 0
+  ```
+]
+
+#newpara()
+
+*函数调用跳转指令*
+- RISC-V函数调用跳转指令
+#three-line-table[
+  | 指令 | 指令功能 |
+  | --- | --- |
+  | `jal rd, imm[20:1]` | `rd <- pc+4; pc <- pc + imm`（跳转并保存返回地址） |
+  | `jalr rd, (imm[11:0])rs` | `rd <- pc+4; pc <- rs + imm`（寄存器间接跳转并保存返回地址） |
+]
+- rd 是 destination register（目标寄存器）的缩写
+  - 在 RISC-V 的 `jal` 和 `jalr` 指令里，`rd` 被用来保存“返回地址”
+  - 习惯上，编译器/汇编器会把它设成 `x1` (ra, return address)，所以函数调用时返回地址就会存到 `ra` 寄存器
+- 机器执行一条指令时，PC (program counter) 指向当前指令
+  - 一条 RISC-V 指令是 4 字节。执行完当前指令后，下一条指令的地址就是 PC + 4
+  - 所以在执行 `jal/jalr` 时，硬件会自动把 PC+4 存到 `rd`，这样函数结束时 `ret` 就知道要跳回调用点的下一条指令继续执行
+
+
+
+
+
+*函数调用约定*
+- 函数调用约定 (Calling Convention) 约定在某个指令集架构上，某种编程语言的函数调用如何实现。它包括了以下内容：
+  - 函数的输入参数和返回值如何传递；
+  - 函数调用上下文中调用者/被调用者保存寄存器的划分；
+  - 其他的在函数调用流程中对于寄存器的使用方法。
+- *RISC-V函数调用约定：调用参数和返回值传递*
+  - RISC-V寄存器功能分类
+    #three-line-table[
+      | 寄存器组 | 保存者 | 功能 |
+      | a0-a7(`x10-x17`) | 调用者(caller) | 用来传递输入参数，其中的 a0 和 a1 还用来保存返回值 |
+      | t0-t6(`x5-x7`, `x28-x31`) | 调用者(caller) | 作为临时寄存器使用，在被调函数中可以随意使用无需保存 |
+      | s0-s11(`x8-x9`, `x18-x27`) | 被调用者(callee) | 作为临时寄存器使用，被调函数保存后才能在被调函数中使用 |
+    ]
+- *RISC-V函数调用约定：栈帧*
+  #figure(
+    image("pic/2025-09-27-23-23-30.png", width: 80%),
+    numbering: none,
+  )
+  - #grid(columns: (1fr, 1fr))[栈帧（Stack Frames）
+      - `*sp`(stack pointer) 栈指针：指向栈顶
+      - `*fp`(frame pointer) 帧指针：指向基址
+      - 堆栈帧可能有不同的大小和内容，但总体结构是类似的
+      - 每个堆栈帧始于这个函数的返回值和前一个函数的`fp`值
+      - `sp` 寄存器总是指向当前堆栈框架的底部
+      - `fp` 寄存器总是指向当前堆栈框架的顶部
+    ][#figure(
+        image("pic/2025-09-27-23-26-12.png", width: 80%),
+        numbering: none,
+      )
+    ]
+  ```
+  return address *                 # 返回地址，栈帧的入口点
+  previous fp                      # 上一个栈帧的fp
+  saved registers                  # 被调用者保存的寄存器
+  local variables                  # 局部变量
+  …                                # 临时空间、函数参数的副本、对齐填充等
+  return address fp register       # 返回地址和帧指针往往会被放在一起保存
+  previous fp (pointed to *)       # 上一个栈帧的fp
+  saved registers                  # 被调用者保存的寄存器
+  local variables                  # 局部变量
+  … sp register                    # 栈指针
+  ```
+  - *RISC-V函数调用约定：ret指令*
+    - 当 `ret` 指令执行，下面的伪代码实现调整堆栈指针和PC:
+    ```
+    pc = return address
+    sp = sp + ENTRY_SIZE
+    fp = previous fp
+    ```
+  - *RISC-V函数调用约定：函数结构*
+    - 函数结构组成：prologue, body part 和 epilogue
+    - Prologue序言的目的是为了保存程序的执行状态（保存返回地址寄存器和堆栈寄存器FP）
+    - Epilogue尾声的目的是在执行函数体之后恢复到之前的执行状态（跳转到之前存储的返回地址以及恢复之前保存FP寄存器）
+    ```ams
+    .global sum_then_double
+    sum_then_double:
+      addi sp, sp, -16		# prologue
+      sd ra, 0(sp)
+
+      call sum_to         # body part
+      li t0, 2
+      mul a0, a0, t0
+
+      ld ra, 0(sp)			  # epilogue
+      addi sp, sp, 16
+      ret
+    ```
+    - ra 在进入时保存，退出时恢复
+    - 调用 sum_to 时不会破坏本函数的返回地址
+    - sp 在进入时下移，退出时上移，保持栈的干净
+
+  #note(subname: [去掉 prologue/epilogue 的情况])[
+    - 返回地址丢失
+      - `call sum_to` 会把当前函数的返回地址写进 `ra`
+      - 但是本函数自己也需要 `ra`，否则 `ret` 就不知道该跳回哪
+      - 因为没有保存 `ra`，所以在 `call sum_to` 后，`ra` 已经被覆盖
+      - `ret` 的时候，它会错误地跳回 `sum_to` 的调用点，而不是 `sum_then_double` 的调用点
+
+    - 栈空间不平衡
+      - 如果本函数还需要保存寄存器或局部变量，就会没有空间放
+      - `sp` 没有调整，导致栈帧结构被破坏
+  ]
+
+=== LibOS初始化
+
+*分配并使用启动栈*
+```asm
+# os/src/entry.asm
+    .section .text.entry
+    .globl _start
+_start:
+    la sp, boot_stack_top
+    call rust_main
+
+    .section .bss.stack
+    .globl boot_stack
+boot_stack:
+    .space 4096 * 16
+    .globl boot_stack_top
+boot_stack_top:
+```
+- CPU 加电后会从固定入口（QEMU/bootloader 指定的地址）进入 `_start`
+- 但一开始 CPU 没有栈，函数调用、局部变量都无法工作
+- 所以第一件事：给 CPU 建立一个 启动栈 (boot_stack)，然后把 `sp` 指向栈顶
+```ld
+# os/src/linker-qemu.ld
+.bss : {
+    *(.bss.stack)
+    sbss = .;
+    *(.bss .bss.*)
+    *(.sbss .sbss.*)
+}
+ebss = .;
+```
+- 在链接脚本 `linker.ld` 中 `.bss.stack` 段最终会被汇集到 `.bss` 段中 `.bss` 段一般放置需要被初始化为零的数据
+
+*控制权转交：ASM --> Rust/C*
+- 将控制权转交给 Rust 代码，该入口点在 `main.rs` 中的`rust_main`函数
+  ```rust
+  // os/src/main.rs
+  pub fn rust_main() -> ! {
+      loop {}
+  }
+  ```
+  - 汇编把控制权转交给 Rust
+  - 由于我们用的是 裸机程序，不能用常规的 `main()`（它依赖 libc/OS），所以定义了 `rust_main` 作为内核的入口点
+  - 这里 `-> !` 表示函数不会返回（内核常驻运行）。
+  - 后续的系统初始化、驱动加载等工作会写在这里。
+
+*清空bss段*
+- 清空bss段(未初始化数据段)
+  ```rust
+  pub fn rust_main() -> ! {
+    clear_bss(); //调用清空bss的函数clear_bss()
+  }
+  fn clear_bss() {
+      extern "C" {
+          fn sbss(); //bss段的起始地址
+          fn ebss(); //bss段的结束地址
+      }
+      //对[sbss..ebss]这段内存空间清零
+      (sbss as usize..ebss as usize).for_each(|a| {
+          unsafe { (a as *mut u8).write_volatile(0) }
+      });
+  }
+  ```
+  - `.bss` 段是 未初始化的全局变量/静态变量存放区
+  - 按照 C/Rust 的语言规范，`.bss` 段里的内容必须在程序开始运行时清零
+  - 但是 CPU 上电时内存是随机值，不会自动清零；所以内核启动时必须手动完成这一步
+  - 链接脚本里
+    - `.bss` 段的起始地址和结束地址分别由 `sbss` 和 `ebss` 符号表示
+    - 启动栈 `.bss.stack` 也放在 `.bss` 段里（这块内存同样需要清零）
+
+=== SBI调用
+
+*SBI服务接口*
+- 在屏幕上打印 Hello world!
+  - SBI服务接口
+    - Supervisor Binary Interface
+    - 更底层的软件给操作系统提供的服务
+  - RustSBI
+    - 实现基本的SBI服务
+    - 遵循SBI调用约定
+*SBI服务编号*
+```rust
+// os/src/sbi.rs
+const SBI_SET_TIMER: usize = 0;
+const SBI_CONSOLE_PUTCHAR: usize = 1;
+const SBI_CONSOLE_GETCHAR: usize = 2;
+const SBI_CLEAR_IPI: usize = 3;
+const SBI_SEND_IPI: usize = 4;
+const SBI_REMOTE_FENCE_I: usize = 5;
+const SBI_REMOTE_SFENCE_VMA: usize = 6;
+const SBI_REMOTE_SFENCE_VMA_ASID: usize = 7;
+const SBI_SHUTDOWN: usize = 8;
+```
+#newpara()
+*汇编级SBI调用*
+```rust
+// os/src/sbi.rs
+#[inline(always)] //总是把函数展开
+fn sbi_call(which: usize, arg0: usize, arg1: usize, arg2: usize) -> usize {
+    let mut ret; //可修改的变量ret
+    unsafe {
+        asm!(//内嵌汇编
+            "ecall", //切换到更高特权级的机器指令
+            inlateout("x10") arg0 => ret, //SBI参数0&返回值
+            in("x11") arg1,  //SBI参数1
+            in("x12") arg2,  //SBI参数2
+            in("x17") which, //SBI编号
+        );
+    }
+    ret //返回ret值
+}
+```
+- SBI调用：输出字符
+  - 在屏幕上输出一个字符
+  ```rust
+  // os/src/sbi.rs
+  pub fn console_putchar(c: usize) {
+      sbi_call(SBI_CONSOLE_PUTCHAR, c, 0, 0);
+  }
+  ```
+  实现格式化输出
+  - 编写基于 `console_putchar` 的 `println!` 宏
+- SBI调用：关机
+  - `panic!`和`println!`是一个宏（类似C的宏），`!`是宏的标志
+  ```rust
+  // os/src/sbi.rs
+  pub fn shutdown() -> ! {
+      sbi_call(SBI_SHUTDOWN, 0, 0, 0);
+      panic!("It should shutdown!");
+  }
+  ```
+- 优雅地处理错误panic
+  ```rust
+  #[panic_handler]
+  fn panic(info: &PanicInfo) -> ! { //PnaicInfo是结构类型
+      if let Some(location) = info.location() { //出错位置存在否？
+          println!(
+              "Panicked at {}:{} {}",
+              location.file(), //出错的文件名
+              location.line(), //出错的文件中的行数
+              info.message().unwrap() //出错信息
+          );
+      } else {
+          println!("Panicked: {}", info.message().unwrap());
+      }
+      shutdown() //关机
+  }
+  ```
+
+*LibOS完整功能*
+- 优雅地处理错误panic
+  ```rust
+  pub fn rust_main() -> ! {
+      clear_bss();
+      println!("Hello, world!");
+      panic!("Shutdown machine!");
+  }
+  ```
+- 运行结果
+  ```log
+  [RustSBI output]
+  Hello, world!
+  Panicked at src/main.rs:26 Shutdown machine!
+  ```
