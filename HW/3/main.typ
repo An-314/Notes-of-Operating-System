@@ -127,6 +127,69 @@
   [ERROR] [kernel] .bss [0x80214000, 0x80215000)
   [rustsbi-panic] hart 0 %
   ```
+  但该方法在实验仓库`rCore-Tutorial-Code.git`中无法使用，原因是`QEMU`版本过高(10.1.0)，而实验要求`QEMU`版本要求在`7.0.0`到`8.0.0`之间。
+  - 由于Arch Linux的滚动更新机制，`pacman`无法安装指定版本的`QEMU`，只能安装最新版；在安装旧版本的时候会有一系列依赖冲突问题
+    - 通过`downgrade`命令将`QEMU`版本降级，发现依赖关系过于复杂，会和系统中的一些库冲突，考虑编译安装
+    - 在编译过程中发现`QEMU`的 eBPF 模块和系统里的 libbpf API 版本不兼容，导致编译失败
+    - 最终选择用`Docker`容器来编译安装`QEMU 7.0.0`
+  ```log
+  A-Terminal# make run
+  (rustup target list | grep "riscv64gc-unknown-none-elf (installed)") || rustup target add riscv64gc-unknown-none-elf
+  info: syncing channel updates for 'nightly-2024-05-02-x86_64-unknown-linux-gnu'
+  info: latest update on 2024-05-02, rust version 1.80.0-nightly (c987ad527 2024-05-01)
+  info: downloading component 'cargo'
+  info: downloading component 'clippy'
+  info: downloading component 'llvm-tools'
+  info: downloading component 'rust-src'
+  info: downloading component 'rust-std'
+  info: downloading component 'rustc'
+  info: downloading component 'rustfmt'
+  info: installing component 'cargo'
+  info: installing component 'clippy'
+  info: installing component 'llvm-tools'
+  info: installing component 'rust-src'
+  info: installing component 'rust-std'
+  info: installing component 'rustc'
+  info: installing component 'rustfmt'
+  info: downloading component 'rust-std' for 'riscv64gc-unknown-none-elf'
+  info: installing component 'rust-std' for 'riscv64gc-unknown-none-elf'
+  cargo install cargo-binutils
+      Updating crates.io index
+    Downloaded cargo-binutils v0.4.0
+    Downloaded 1 crate (28.2 KB) in 0.67s
+      Ignored package `cargo-binutils v0.4.0` is already installed, use --force to override
+  rustup component add rust-src
+  info: component 'rust-src' is up to date
+  rustup component add llvm-tools-preview
+  info: component 'llvm-tools' for target 'x86_64-unknown-linux-gnu' is up to date
+  Platform: qemu
+      Updating crates.io index
+    Downloaded log v0.4.28
+    Downloaded 1 crate (51.1 KB) in 0.71s
+    Compiling log v0.4.28
+    Compiling os v0.1.0 (/mnt/os)
+      Finished `release` profile [optimized + debuginfo] target(s) in 1.13s
+  [rustsbi] RustSBI version 0.3.0-alpha.4, adapting to RISC-V SBI v1.0.0
+  .______       __    __      _______.___________.  _______..______   __
+  |   _  \     |  |  |  |    /       |           | /       ||   _  \ |  |
+  |  |_)  |    |  |  |  |   |   (----`---|  |----`|   (----`|  |_)  ||  |
+  |      /     |  |  |  |    \   \       |  |      \   \    |   _  < |  |
+  |  |\  \----.|  `--'  |.----)   |      |  |  .----)   |   |  |_)  ||  |
+  | _| `._____| \______/ |_______/       |__|  |_______/    |______/ |__|
+  [rustsbi] Implementation     : RustSBI-QEMU Version 0.2.0-alpha.2
+  [rustsbi] Platform Name      : riscv-virtio,qemu
+  [rustsbi] Platform SMP       : 1
+  [rustsbi] Platform Memory    : 0x80000000..0x88000000
+  [rustsbi] Boot HART          : 0
+  [rustsbi] Device Tree Region : 0x87000000..0x87000ef2
+  [rustsbi] Firmware Address   : 0x80000000
+  [rustsbi] Supervisor Address : 0x80200000
+  [rustsbi] pmp01: 0x00000000..0x80000000 (-wr)
+  [rustsbi] pmp02: 0x80000000..0x80200000 (---)
+  [rustsbi] pmp03: 0x80200000..0x88000000 (xwr)
+  [rustsbi] pmp04: 0x88000000..0x00000000 (-wr)
+  [kernel] Hello, world!
+  ```
 ]
 
 = 第二题
