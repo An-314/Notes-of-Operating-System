@@ -719,6 +719,7 @@
       - 上下文切换、地址空间切换可能导致 TLB 失效 (TLB flush)
       - OS 在切换进程时往往需要清空或刷新 TLB
 ]
+#newpara()
 *M-Mode的中断控制和状态寄存器*
 - `mtvec`(MachineTrapVector)保存发生中断/异常时要跳转到的*中断处理例程入口地址*
 - `mie`(Machine Interrupt Enable)中断*使能*寄存器
@@ -728,7 +729,7 @@
 - `mcause`(Machine Exception Cause)指示发生*中断/异常的种类*
 - `mtval`(Machine Trap Value)保存陷入(trap)*附加信息*
 - `mscratch`(Machine Scratch)它暂时存放一个字大小的*数据*
-- *mstatus CSR寄存器*“：mstatus(Machine Status)保存全局中断以及其他的状态
+- *mstatus CSR寄存器*：mstatus(Machine Status)保存全局中断以及其他的状态
   - SIE控制S-Mode下全局中断，MIE控制M-Mode下全局中断。
   - SPIE、MPIE记录发生中断之前*MIE和SIE*的值。
   - SPP表示变化之前的特权级别是S-Mode还是U-Mode
@@ -744,13 +745,13 @@
     image("pic/2025-09-29-01-25-15.png", width: 80%),
     numbering: none,
   )
-- *M-Mode时钟中断Timer*
-  - 中断是异步发生的
-    - 来自处理器外部的 I/O 设备的信号
-  - Timer 可以稳定定时地产生中断
-    - 防止应用程序死占着 CPU 不放, 让 OS Kernel 能得到执行权...
-    - 由*高特权模式下的软件*获得 CPU 控制权
-    - 高特权模式下的软件可*授权*低特权模式软件处理中断
+*M-Mode时钟中断Timer*
+- 中断是异步发生的
+  - 来自处理器外部的 I/O 设备的信号
+- Timer 可以稳定定时地产生中断
+  - 防止应用程序死占着 CPU 不放, 让 OS Kernel 能得到执行权
+  - 由*高特权模式下的软件*获得 CPU 控制权
+  - 高特权模式下的软件可*授权*低特权模式软件处理中断
 
 ==== 中断/异常的硬件响应
 
@@ -808,28 +809,117 @@
 - 但是这些额外的操作会*减慢中断/异常的处理速度*
 - RISC-V 提供一种*中断/异常委托机制*，通过该机制可以选择性地将中断/异常交给 S-Mode处理，而*完全绕过 M-Mode*
 *M-Mode中断/异常处理的控制权移交*
-- mideleg/medeleg (Machine Interrupt/Exception *Delegation*）CSR 控制将哪些中断/异常委托给 S-Mode处理
+- *mideleg/medeleg* (Machine Interrupt/Exception *Delegation*）CSR 控制将哪些中断/异常委托给 S-Mode处理
 - mideleg/medeleg 中的每个位对应一个中断/异常
   - 如 mideleg[5] 对应于 S-Mode的时钟中断，如果把它置位，S-Mode的时钟中断将会移交 S-Mode的中断/异常处理程序，而不是 M-Mode的中断/异常处理程序
-  - 委托给 S-Mode的任何中断都可以被 S-Mode的软件屏蔽。sie(Supervisor Interrupt Enable) 和 sip（Supervisor Interrupt Pending）CSR 是 S-Mode的控制状态寄存器
+  - 委托给 S-Mode的任何中断都可以被 S-Mode的软件屏蔽。
+    - sie(Supervisor Interrupt Enable) 和 sip（Supervisor Interrupt Pending）CSR 是 S-Mode的控制状态寄存器
 - *中断委托寄存器mideleg*
   - mideleg (Machine Interrupt Delegation）控制将哪些中断委托给 S 模式处理
   - mideleg 中的每个为对应一个中断/异常
-    - mideleg[1]用于控制是否将核间中断交给s模式处理
-    - mideleg[5]用于控制是否将定时中断交给s模式处理
-    - mideleg[9]用于控制是否将外部中断交给s模式处理
+    - mideleg[1]用于控制是否将*核间中断*交给s模式处理
+    - mideleg[5]用于控制是否将*定时中断*交给s模式处理
+    - mideleg[9]用于控制是否将*外部中断*交给s模式处理
 - *异常委托寄存器medeleg*
   - medeleg (Machine Exception Delegation）控制将哪些异常委托给 S 模式处理
   - medeleg 中的每个为对应一个中断/异常
-    - medeleg[1]用于控制是否将指令获取错误异常交给s模式处理
-    - medeleg[12]用于控制是否将指令页异常交给s模式处理
-    - medeleg[9]用于控制是否将数据页异常交给s模式处理
+    - medeleg[1]用于控制是否将*指令获取错误异常*交给s模式处理
+    - medeleg[12]用于控制是否将*指令页异常*交给s模式处理
+    - medeleg[9]用于控制是否将*数据页异常*交给s模式处理
+
+*中断/异常处理的控制权移交*
+- 发生中断/异常时，处理器控制权*通常*不会移交给权限更低的模式
+  - 例如 medeleg[15] 会把 store page fault 委托给 S-Mode
+  - M-Mode下发生的异常总是在 M-Mode下处理
+  - S-Mode下发生的异常总是在 M-Mode，或者在 S-Mode下处理
+  - 上述两种模式发生的异常不会由 U-Mode处理
+
+#note(subname: [思考题])[
+  - 如何通过断点异常来实现调试器的断点调试功能？
+    - 假设我们有一个被调试的用户程序（U-Mode），我们希望在某一行代码执行时中断：
+    - (1) 插入断点指令：调试器在目标地址（例如函数入口或某一语句）处：
+      - 保存原始指令；
+      - 写入一条 `ebreak` 指令。
+      当程序运行到这里，`ebreak` 被执行：
+      - → 硬件触发 Breakpoint Exception
+      - → 控制权转移到 M-Mode 或 S-Mode trap handler（取决于是否委托）。
+    - (2) Trap Handler 做的事情
+      - 保存程序上下文（寄存器、状态等）；
+      - 判断异常类型（`mcause == Breakpoint`）；
+      - 将控制权转移到 调试器（debug monitor）；
+      - 调试器打印状态（寄存器内容、内存、PC、堆栈），等待用户操作。
+    - (3) 恢复执行
+      - 当用户输入“继续运行（continue）”：
+      - 调试器恢复断点位置的原始指令；
+      - 调整 `mepc` 指向断点地址；
+      - 使用 `mret/sret` 返回执行。
+  - 如何实现单步跟踪？
+    - 调试器从当前 `mepc` 读取下一条将执行的指令；
+    - 在 下一条指令地址 上临时插入一个 `ebreak`；
+    - 恢复当前断点位置的原始指令；
+    - 使用 `mret` 返回执行；
+    - 执行完一条指令后，再次触发 `ebreak`；
+    - 调试器再次进入 trap，用户看到“下一步执行状态”。
+]
 
 === RISC-V系统编程：内核编程
 
 ==== 中断/异常机制
 
+*S-Mode的中断控制和状态寄存器*
+- `stvec`(SupervisorTrapVector)保存发生中断/异常时要跳转到的地址
+- `sie`(Supervisor Interrupt Enable)中断使能寄存器
+- `sip`(Supervisor Interrupt Pending)中断请求寄存器
+- `sstatus`(Supervisor Status)保存全局中断以及其他的状态
+- `sepc`(Supervisor Exception PC)指向发生中断/异常时的指令
+- `scause`(Supervisor Exception Cause)指示发生中断/异常的种类
+- `stval`(Supervisor Trap Value)保存陷入(trap)附加信息
+- `sscratch`(Supervisor Scratch)不同mode交换数据中转站
+- *sstatus寄存器*：sstatus的SIE和SPIE位分别保存了当前的和中断/异常发生之前的中断使能状态
+  #figure(
+    image("pic/2025-10-14-15-36-46.png", width: 80%),
+    numbering: none,
+  )
+- *sie & sip 寄存器*是用于保存*待处理中断*和*中断使能*情况的CSR
+  - `sie` （supervisor interrupt-enabled register）
+  - `sip` （supervisor interrupt-pending register）
+  #figure(
+    image("pic/2025-10-14-15-38-30.png", width: 80%),
+    numbering: none,
+  )
+- *scause寄存器*：当发生异常时，CSR中被写入一个指示导致中断/异常的事件编号，记录在`Exception Code`字段中；如果事件由中断引起，则置`Interrupt`位。
+  #figure(
+    image("pic/2025-10-14-15-39-30.png", width: 80%),
+    numbering: none,
+  )
+- *stvec 寄存器*：中断/异常向量（trap-vector）基地址寄存器stvec CSR用于配置*`trap_handler`地址*
+  - 包括向量基址（BASE）和向量模式（MODE）：BASE 域中的值按 4 字节对齐
+    - MODE = 0 表示一个`trap_handler`处理所有的中断/异常
+    - MODE = 1 表示每个中断/异常有一个对应的`trap_handler`
+  #figure(
+    image("pic/2025-10-14-15-40-37.png", width: 80%),
+    numbering: none,
+  )
+
 ==== 中断/异常的处理
+
+*S-Mode中断/异常的硬件响应*
+
+*硬件执行内容*：hart 接受了中断/异常，并需要委派给 S-Mode，那么硬件会原子性的经历下面的状态转换
+- *发生中断/异常的指令PC*被存入 `sepc`，且 PC 被设置为 `stvec`
+- `scause` 设置中断/异常*类型*，`stval`被设置为出错的地址/异常*相关信息*
+- 把`sstatus`中的 SIE 位置零，屏蔽中断，SIE位之前的值被保存在 SPIE 位中
+- *发生例外前的特权模式*被保存在`sstatus`的 SPP（previous privilege）域，然后设置当前特权模式为S-Mode
+- *跳转*到stvec CSR设置的地址继续执行
+
+*S-Mode中断/异常的软件处理*
+- 初始化
+  - 编写中断/异常的处理例程（如`trap_handler`）
+  - 设置`trap_handler`地址给`stvec`
+- 软件执行
+  - 处理器跳转到`trap_handler`
+  - `trap_handler`处理中断/异常/系统调用等
+  - 返回到之前的指令和之前的特权级继续执行
 
 ==== 虚存机制
 
@@ -862,19 +952,40 @@
 ]
 
 *S-Mode虚存机制*
-- 页表的存储结构：*页表*存在物理内存中，每个页表页大小固定 *4 KiB*
+- 计算机内存（RAM）是连续的一段物理地址，比如：
+  ```
+  物理地址：
+  0x0000_0000  →  0xFFFF_FFFF
+  ```
+  如果操作系统允许应用程序直接访问这些物理地址，那不同程序会互相干扰、篡改数据、甚至崩溃。所以 OS 发明了一个“虚拟内存”的概念：
+  - 每个程序都“看到”自己独立的一段地址空间（虚拟地址空间）
+  - CPU 实际访问物理内存时，由硬件（MMU）根据页表(Page Table) 把虚拟地址 → 物理地址
+- 虚拟内存的划分：页（Page）
+  - 内存不是以字节为单位管理的，而是以页 (Page)为单位
+    ```
+    1 页 = 4 KB = 4096 字节 = 2^12 字节
+    ```
+    于是，虚拟地址就分成两部分：
+    ```
+    +---------------------+----------------+
+    | 虚拟页号 (VPN)     | 页内偏移 (Offset) |
+    +---------------------+----------------+
+    ```
+    - 页内偏移 (12 位)：页内第几个字节（0～4095）。
+    - 虚拟页号 VPN：页的编号，用来查页表。
+- 页表的存储结构：*页表*存在物理内存中，每个页表页大小固定*4 KB*
   - 一个页表页里面放很多*页表项 (PTE, Page Table Entry)*
-  - 一个 PTE = 8 字节 (64 bits)
-  - 一页 4 KiB ÷ 8 B = 512 个 PTE
+  - 一个 PTE = 8 字节 = 64 位(bits)
+  - 一页 4 KB ÷ 8 B = 512 个 PTE
   - 所以每一级页表最多能管理 512 个子节点，每级索引是 9 位
 - 页表项 (PTE) 的结构
   - PTE 的基本结构包括：有效位、权限位、物理页号 (PPN)
-  ```
-  63        10  9   8  7 6 5 4 3 2 1 0 bit
-  +-----------+---+---+---------------+
-  | PPN (44)  |RSW| D | A | X W R V   |
-  +-----------+---+---+---------------+
-  ```
+    ```
+    63        10  9   8  7 6 5 4 3 2 1 0 bit
+    +-----------+---+---+---------------+
+    | PPN (44)  |RSW| D | A | X W R V   |
+    +-----------+---+---+---------------+
+    ```
   - PPN (Physical Page Number, 44 bits) → 指向下一级页表，或直接指向物理页
   - 控制位 (低 10 bits)
     - V (Valid)：是否有效
@@ -883,13 +994,13 @@
     - RSW：软件保留位（OS 自己用）
 - 多级页表的组织方式
   - 以 Sv39 (三级页表) 为例，虚拟地址被拆成：
-  ```
-    38       30  29       21  20       12  11       0
-  +------------+------------+------------+------------- +
-  | VPN[2]     | VPN[1]     | VPN[0]     | Page Offset  |
-  +------------+------------+------------+------------- +
-  9 bits      9 bits      9 bits      12 bits
-  ```
+    ```
+      38       30  29       21  20       12  11       0
+    +------------+------------+------------+------------- +
+    | VPN[2]     | VPN[1]     | VPN[0]     | Page Offset  |
+    +------------+------------+------------+------------- +
+    9 bits      9 bits      9 bits      12 bits
+    ```
 - RISC-V 64 支持以下虚拟地址转换方案：
   #three-line-table[
     | 模式 | 虚拟地址位宽 | 页表级数 | 每级索引位数 | 物理地址位宽 |
@@ -898,25 +1009,100 @@
     | Sv48 | 48 位 | 4 级 | 9-9-9-9 | 56 位 |
     | Sv57 | 57 位 | 5 级 | 9-9-9-9-9 | 56 位 |
   ]
-  - 不同的模式仅影响 虚拟地址的解析，物理地址仍然受处理器实现的物理地址宽度（通常为 56 位）(为什么是9？)
+  - 不同的模式仅影响虚拟地址的解析，物理地址仍然受处理器实现的物理地址宽度（通常为 56 位）
   - 地址偏离量：页内偏移，页表项索引
-  - 44位表示57位虚拟地址
+  - 44位PPN+12位页内偏移$->$56位物理地址
   - 每一页$2^12=4096$字节，每级页表有$2^9=512$个页表项
-  - 后面是标志位
-- 通过satp CSR建立页表基址
+- 通过`satp` CSR建立页表基址
 - 建立OS和APP的页表
 - 处理内存访问异常
+  #figure(
+    image("pic/2025-10-15-22-45-59.png", width: 80%),
+    numbering: none,
+  )
+
+*S-Mode虚存的地址转换*
+- 读取 satp CSR
+  - satp.PPN 给出了*L2页表基地址的物理页号*（Physical Page Number, PPN）
+  - satp.MODE（4 bits）：8（Sv39）、9（Sv48）、10（Sv57）
+    ```
+    L2页表基地址 = PPN × 4 KiB
+    ```
+- 三级地址翻译步骤：
+  - 假设：
+    - `satp.PPN = 0x12345`
+    - `VA = 0x0000_0987_6543_21`
+    - `VPN[2]=0x026(9 bits) VPN[1]=0x03B(9 bits) VPN[0]=0x094(9 bits) Page Offset = 0x321`
+  - `VPN[2] = VA [38:30]`，给出了L2页表的索引号
+    ```
+    L2页表的页表项(L2-PTE)地址= (satp.PPN × 4 KiB) + (VPN[2] × 8)
+    L2-PTE.PPN = L1页表基址的物理页号
+
+    L2 页表基地址 = satp.PPN × 4 KiB = 0x12345 × 0x1000 = 0x12345000
+    索引号 = VPN[2] = 0x26
+    该 PTE 的地址 = L2 基址 + VPN[2] × 8 = 0x12345000 + 0x26×8 = 0x12345130
+    ```
+    CPU 从这个地址取出 L2-PTE，假设读出的 L2-PTE 里：`PPN = 0x20000`
+  - `VPN[1] = VA [29:21]`，给出了L1页表的索引号
+    ```
+    L1页表的页表项(L1-PTE)地址= (L2-PTE.PPN × 4 KiB) + (VPN[1] × 8)
+    L1-PTE.PPN = L0页表基址的物理页号
+
+    L1 页表基地址 = L2-PTE.PPN × 4 KiB = 0x20000 × 0x1000 = 0x20000000
+    索引号 = VPN[1] = 0x3B
+    该 PTE 的地址 = L1 基址 + VPN[1] × 8 = 0x20000000 + 0x3B×8 = 0x20000000 + 0x1D8 = 0x200001D8
+    ```
+    假设该 PTE 内容：`PPN = 0x30000`
+  - `VPN[0] = VA [20:12]`，给出了L0页表的索引号
+    ```
+    L0页表的页表项(L0-PTE)地址= (L1-PTE.PPN × 4 KiB) + (VPN[0] × 8)
+    L0-PTE.PPN = 最终物理地址的物理页号
+
+    L0 页表基地址 = L1-PTE.PPN × 4 KiB = 0x30000 × 0x1000 = 0x30000000
+    索引号 = VPN[0] = 0x094
+    该 PTE 的地址 = L0 基址 + VPN[0] × 8 = 0x30000000 + 0x94×8 = 0x300004A0
+    ```
+    假设该 PTE 内容：`PPN = 0x40000`
+  - 计算物理地址
+    ```
+    虚地址对应的最终物理地址 = (L0 PTE.PPN × 4 KiB) + Page Offset
+
+    L0-PTE.PPN = 0x40000
+
+    PA  = PPN × 4 KiB + Offset
+        = 0x40000 × 0x1000 + 0x321
+        = 0x40000000 + 0x321
+        = 0x40000321
+    ```
+
+#note(subname: [小结])[
+  - RISC-V 特权级
+    - M-Mode, (H-Mode) S-Mode, U-Mode
+  - RISC-V 的 M-Mode 和 S-Mode 的基本特征
+    - 中断使能、委托和配置；页表使能和配置
+  - 不同软件如何在 M-Mode<–>S-Mode<–>U-Mode 之间进行切换
+    - `ecall, mret, sret`
+  - 中断响应过程
+  - 虚实地址转换过程
+    - 手工计算地址转换
+]
 
 == 实践：批处理操作系统
+
+详见：https://rcore-os.cn/rCore-Tutorial-Book-v3/chapter2/index.html
 
 === 实验目标
 
 *批处理操作系统的结构*
+#figure(
+  image("pic/2025-10-14-14-50-32.png", width: 80%),
+  numbering: none,
+)
 
 *批处理OS目标*
 - 让APP与OS隔离
 - 自动加载并运行多个程序
-  - 批处理（batch）
+  - *批处理（batch）*
 
 *实验要求*
 - 理解运行其他软件的软件
@@ -924,8 +1110,544 @@
 - 理解系统调用
 
 *总体思路*
-- 编译：应用程序和内核独立编译，合并为一个镜像
-- 构造：系统调用服务请求接口，应用管理与初始化
-- 运行：OS一个一个地执行应用
-- 运行：应用发出系统调用请求，OS完成系统调用
-- 运行：应用与OS基于硬件特权级机制进行特权级切换
+- 编译：应用程序和内核*独立编译*，合并为一个镜像
+- 构造：*系统调用*服务请求接口，*应用管理与初始化*
+- 运行：OS一个一个地*执行应用*
+- 运行：应用发出*系统调用*请求，OS完成*系统调用*
+- 运行：应用与OS基于硬件特权级机制进行*特权级切换*
+
+=== 实践步骤
+
+*步骤*
+- 构造包含OS和多个APP的*单一执行镜像*
+- 通过批处理支持多个*APP的自动加载和运行*
+- 利用硬件特权级机制实现对操作系统自身的*保护*
+- 支持跨特权级的*系统调用*
+- 实现*特权级的切换*
+编译步骤
+```bash
+git clone https://github.com/rcore-os/rCore-Tutorial-v3.git
+cd rCore-Tutorial-v3
+git checkout ch2
+
+cd os
+make run
+```
+参考运行结果
+```log
+...
+[kernel] num_app = 5
+[kernel] app_0 [0x8020a038, 0x8020af90)
+...
+[kernel] Loading app_0
+Hello, world!
+[kernel] Application exited with code 0
+[kernel] Loading app_1
+...
+[kernel] Panicked at src/batch.rs:58 All applications completed!
+```
+
+=== 软件架构
+
+*软件架构变动*
+- 构建应用：把多个应用合在一起与OS形成一个二进制镜像
+  ```
+  ├── os
+  │   ├── build.rs(新增：生成 link_app.S 将应用作为一个数据段链接到内核)
+  │   ├── Cargo.toml
+  │   ├── Makefile(修改：构建内核之前先构建应用)
+  │   └── src
+  │       ├── link_app.S(构建产物，由 os/build.rs 输出)
+  ```
+- 改进OS：加载和执行程序、特权级上下文切换
+  ```
+  ├── os
+  │   └── src
+  │       ├── batch.rs(新增：实现了一个简单的批处理系统)
+  │       ├── main.rs(修改：主函数中需要初始化 Trap 处理并加载和执行应用)
+  │       └── trap(新增：Trap 相关子模块 trap)
+  │           ├── context.rs(包含 Trap 上下文 TrapContext)
+  │           ├── mod.rs(包含 Trap 处理入口 trap_handler)
+  │           └── trap.S(包含 Trap 上下文保存与恢复的汇编代码)
+  ```
+- 系统调用
+  ```
+  ├── os
+  │   └── src
+  │       ├── syscall(新增：系统调用子模块 syscall)
+  │       │   ├── fs.rs(包含文件 I/O 相关的 syscall)
+  │       │   ├── mod.rs(提供 syscall 方法根据 syscall ID 进行分发处理)
+  │       │   └── process.rs(包含任务处理相关的 syscall)
+  ```
+- 添加应用：批处理OS会按照文件名开头的数字顺序依次加载并运行它们
+  ```
+  └── user(新增：应用测例保存在 user 目录下)
+    └── src
+        ├── bin(基于用户库 user_lib 开发的应用，每个应用放在一个源文件中)
+        │   ├── 00hello_world.rs # 显示字符串的应用
+        │   ├── 01store_fault.rs # 非法写操作的应用
+        │   ├── 02power.rs       # 计算与I/O频繁交替的应用
+        │   ├── 03priv_inst.rs   # 执行特权指令的应用
+        │   └── 04priv_csr.rs    # 执行CSR操作指令的应用
+  ```
+- 应用库和编译应用支持
+  ```
+  └── user(新增：应用测例保存在 user 目录下)
+    └── src
+        ├── console.rs              # 支持println!的相关函数与宏
+        ├── lang_items.rs           # 实现panic_handler函数
+        ├── lib.rs(用户库 user_lib)  # 应用调用函数的底层支撑库
+        ├── linker.ld               # 应用的链接脚本
+        └── syscall.rs(包含 syscall 方法生成实际用于系统调用的汇编指令，
+                      各个具体的 syscall 都是通过 syscall 来实现的)
+  ```
+
+=== 相关硬件
+
+*RISC-V陷入(trap)类指令*
+- `ecall`： 随着 CPU 当前特权级而触发不同的陷入异常
+- `ebreak`：触发断点陷入异常
+*RISC-V特权指令*
+- `sret`： 随着 CPU 当前特权级而触发不同的陷入异常
+
+#figure(
+  image("pic/2025-10-15-23-16-53.png", width: 40%),
+  numbering: none,
+)
+
+=== 应用程序设计
+
+==== 项目结构
+
+*应用与底层支撑库分离*
+```
+└── user(应用程序和底层支撑库)
+   └── src
+      ├── bin(该目录放置基于用户库 user_lib 开发的应用)
+      ├── lib.rs(用户库 user_lib)  # 库函数的底层支撑库
+      ├── ......                  # 支撑库相关文件
+      └── linker.ld               # 应用的链接脚本
+```
+#newpara()
+*引入外部库*
+```rust
+#[macro_use]
+extern crate user_lib;
+```
+#newpara()
+*设计支撑库* 在`lib.rs`中我们定义了用户库的入口点 `_start` ：
+```rust
+#[no_mangle]
+#[link_section = ".text.entry"]
+pub extern "C" fn _start() -> ! {
+    clear_bss();
+    exit(main());
+    panic!("unreachable after sys_exit!");
+}
+```
+
+==== 内存布局
+
+*设计支撑库*`user/src/linker.ld`
+- 将程序的起始物理地址调整为 `0x80400000` ，应用程序都会被加载到这个物理地址上运行
+- 将 `_start` 所在的 `.text.entry` 放在整个程序的开头，也就是说批处理系统只要在加载之后跳转到 `0x80400000` 就已经进入了用户库的入口点，并会在初始化之后跳转到应用程序主逻辑
+- 提供了最终生成可执行文件的 `.bss` 段的起始和终止地址，方便 `clear_bss` 函数使用
+其余的部分与之前相同
+
+==== 系统调用
+
+*应用程序的系统调用执行流*
+- 在子模块`syscall`中，应用程序通过`ecall`调用批处理系统提供的接口
+- `ecall`指令会触发 名为 Environment call from U-mode 的异常
+- Trap 进入 S 模式执行批处理系统针对这个异常特别提供的服务代码
+- `a0~a6`保存系统调用的参数，`a0`保存返回值，`a7`用来传递`syscall ID`
+#figure(
+  image("pic/2025-10-15-23-32-47.png", width: 40%),
+  numbering: none,
+)
+*系统调用支撑库*
+```rust
+/// 功能：将内存中缓冲区中的数据写入文件。
+/// 参数：`fd` 表示待写入文件的文件描述符；
+///      `buf` 表示内存中缓冲区的起始地址；
+///      `len` 表示内存中缓冲区的长度。
+/// 返回值：返回成功写入的长度。
+/// syscall ID：64
+fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize;
+
+/// 功能：退出应用程序并将返回值告知批处理系统。
+/// 参数：`xstate` 表示应用程序的返回值。
+/// 返回值：该系统调用不应该返回。
+/// syscall ID：93
+fn sys_exit(xstate: usize) -> !;
+```
+#newpara()
+*系统调用参数传递*
+```rust
+fn syscall(id: usize, args: [usize; 3]) -> isize {
+    let mut ret: isize;
+    unsafe {
+        asm!(
+            "ecall",
+            inlateout("x10") args[0] => ret, //第一个参数&返回值
+            in("x11") args[1],               //第二个参数
+            in("x12") args[2],               //第三个参数
+            in("x17") id                     //syscall编号
+        );
+    }
+    ret //返回值
+}
+```
+#newpara()
+*系统调用封装*
+```rust
+const SYSCALL_WRITE: usize = 64;
+const SYSCALL_EXIT: usize = 93;
+//对系统调用的封装
+pub fn sys_write(fd: usize, buffer: &[u8]) -> isize {
+    syscall(SYSCALL_WRITE, [fd, buffer.as_ptr() as usize, buffer.len()])
+}
+pub fn sys_exit(xstate: i32) -> isize {
+    syscall(SYSCALL_EXIT, [xstate as usize, 0, 0])
+}
+
+pub fn write(fd: usize, buf: &[u8]) -> isize { sys_write(fd, buf) }
+
+const STDOUT: usize = 1;
+
+impl Write for Stdout {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        write(STDOUT, s.as_bytes());
+        Ok(())
+    }
+}
+```
+
+=== 内核程序设计
+
+==== 应用管理和加载
+
+*将应用程序映像链接到内核*
+```asm
+# os/src/link_app.S 由脚本 os/build.rs 生成
+    .section .data
+    .global _num_app
+_num_app:
+    .quad 5
+    .quad app_0_start
+    ...
+    .quad app_4_end
+    .section .data
+    .global app_0_start
+    .global app_0_end
+app_0_start:
+    .incbin "../user/target/riscv64gc-unknown-none-elf/release/00hello_world.bin"
+app_0_end:
+```
+#newpara()
+*应用程序管理数据结构*
+```rust
+// os/src/batch.rs
+
+struct AppManager {
+    num_app: usize,
+    current_app: usize,
+    app_start: [usize; MAX_APP_NUM + 1],
+}
+```
+#newpara()
+*找到应用程序二进制码*
+- 找到 `link_app.S` 中提供的符号 `_num_app`
+```rust
+lazy_static! {
+    static ref APP_MANAGER: UPSafeCell<AppManager> = unsafe { UPSafeCell::new({
+        extern "C" { fn _num_app(); }
+        let num_app_ptr = _num_app as usize as *const usize;
+        ...
+        app_start[..=num_app].copy_from_slice(app_start_raw);
+        AppManager {
+            num_app,
+            current_app: 0,
+            app_start,
+        }
+```
+```rust
+unsafe fn load_app(&self, app_id: usize) {
+    // clear icache
+    asm!("fence.i");
+    // clear app area
+    ...
+    let app_src = core::slice::from_raw_parts(
+        self.app_start[app_id] as *const u8,
+        self.app_start[app_id + 1] - self.app_start[app_id] );
+    let app_dst = core::slice::from_raw_parts_mut(
+        APP_BASE_ADDRESS as *mut u8,
+        app_src.len() );
+    app_dst.copy_from_slice(app_src);
+}
+```
+- `fence.i`#footnote[`fence.i`是i-cache屏障(barrier)指令，非特权指令，属于 “Zifencei”扩展规范] ：用来清理 i-cache
+- `fence.i` 是一条专门用于保持指令缓存一致性的指令，它通常用于程序需要在运行时修改代码或者生成新的代码片段的情境下，确保修改后的代码能够被正确地从内存中取出并执行
+- 对于大多数普通应用程序，不涉及自修改代码或 JIT 编译的场景，`fence.i` 不会经常被使用
+- CPU 对物理内存所做的缓存又分成d-cache和i-cache
+- OS将修改会被 CPU 取指的内存区域，这会使得 i-cache 中含有与内存中不一致的内容
+- OS在这里必须使用 fence.i 指令手动清空 i-cache ，让里面所有的内容全部失效，才能够*保证CPU访问内存数据和代码的正确性*
+
+==== 特权级切换
+
+*特权级切换相关CSR*
+#three-line-table[
+  | CSR 名 | 该 CSR 与 Trap 相关的功能 |
+  | :--- | :--- |
+  | `sstatus` | SPP 等字段给出 Trap 发生之前 CPU 的特权级（S/U）等 |
+  | `sepc` | 记录 Trap 发生之前执行的最后一条指令的地址 |
+  | `scause` | 描述 Trap 的原因 |
+  | `stval` | 给出 Trap 附加信息（例如出错地址） |
+  | `stvec` | 控制 Trap 处理代码的入口地址 |
+]
+#newpara()
+*特权级切换后的硬件逻辑*
+- `sstatus` 的 SPP 字段会被修改为 CPU 当前的特权级（U/S） -- 用于记录和恢复trap前的状态
+- `sepc` 会被修改为产生 Trap 的指令地址
+- `scause`/`stval` 分别会被修改成这次 Trap 的原因以及相关的附加信息 -- `scause`用于存储trap种类（中断、异常）和类型（时钟、外设、page fault；如果是page fault，`stval`记录对应的虚拟地址）
+- CPU 将当前特权级设为 S，跳到 `stvec` 所设置的 Trap 处理入口地址
+*特权级切换与用户栈和内核栈*
+- 使用两个不同的栈？安全
+```rust
+const USER_STACK_SIZE: usize = 4096 * 2;
+const KERNEL_STACK_SIZE: usize = 4096 * 2;
+
+static KERNEL_STACK: KernelStack = KernelStack { data: [0; KERNEL_STACK_SIZE] };
+static USER_STACK: UserStack = UserStack { data: [0; USER_STACK_SIZE] };
+```
+#newpara()
+*特权级切换中的换栈*
+```rust
+impl UserStack {
+    fn get_sp(&self) -> usize {
+        self.data.as_ptr() as usize + USER_STACK_SIZE
+    }
+}
+RegSP = USER_STACK.get_sp();
+RegSP = KERNEL_STACK.get_sp();
+```
+
+==== Trap上下文
+
+*Trap上下文数据结构*
+```rust
+#[repr(C)]
+pub struct TrapContext {
+    pub x: [usize; 32],
+    pub sstatus: Sstatus,
+    pub sepc: usize,
+}
+```
+- 对于通用寄存器而言，应用程序/内核控制流运行在不同的特权级
+- 进入 Trap 的时候，*硬件会立即覆盖掉* `scause/stval/sstatus/sepc`
+*特权级切换后的Trap入口点*
+```rust
+pub fn init() {
+    extern "C" { fn __alltraps(); }
+    unsafe {
+        stvec::write(__alltraps as usize, TrapMode::Direct);
+    }
+}
+```
+#newpara()
+*系统调用过程中的Trap上下文处理*
+- *应用程序*通过 `ecall` 进入到内核状态时，*操作系统*保存被打断的应用程序的 Trap 上下文
+- *操作系统*根据Trap相关的CSR寄存器内容，完成系统调用服务的分发与处理
+- *操作系统*完成系统调用后，恢复被打断的应用程序的Trap 上下文，通过`sret`指令让应用程序继续执行
+*用户栈到内核栈的切换*
+- `sscratch` CSR 重要的中转寄存器
+  - 暂时保存内核栈的地址
+  - 作为一个中转站让 `sp` （目前指向的用户栈的地址）的值可以暂时保存在 `sscratch`
+  - 仅需一条 `csrrw sp, sscratch, sp // 交换对 sp 和 sscratch 两个寄存器内容`
+  - 完成用户栈-->内核栈的切换
+*保存Trap上下文中的通用寄存器*
+- 保存通用寄存器的宏
+```asm
+# os/src/trap/trap.S
+.macro SAVE_GP n
+    sd x\n, \n*8(sp)
+.endm
+```
+
+==== Trap处理流程
+
+*Trap处理流程*
+- Trap 处理的总体流程如下：
+  - 首先通过 `__alltraps` 将 Trap 上下文保存在内核栈上
+  - 然后跳转到 `trap_handler` 函数完成 Trap 分发及处理
+```asm
+__alltraps:
+    csrrw sp, sscratch, sp
+    # now sp->kernel stack, sscratch->user stack
+
+    # allocate a TrapContext on kernel stack
+    addi sp, sp, -34*8
+```
+#newpara()
+*保存Trap上下文*
+- 保存通用寄存器
+  ```asm
+  # save general-purpose registers
+  sd x1, 1*8(sp)
+  # skip sp(x2), we will save it later
+  sd x3, 3*8(sp)
+  # skip tp(x4), application does not use it
+  # save x5~x31
+  .set n, 5
+  .rept 27
+      SAVE_GP %n
+      .set n, n+1
+  .endr
+  ```
+- 保存 `sstatus` 和 `sepc`
+  ```asm
+  # we can use t0/t1/t2 freely, because they were saved on kernel stack
+  csrr t0, sstatus
+  csrr t1, sepc
+  sd t0, 32*8(sp)
+  sd t1, 33*8(sp)
+  ```
+- 保存 user SP
+  ```asm
+  # read user stack from sscratch and save it on the kernel stack
+  csrr t2, sscratch
+  sd t2, 2*8(sp)
+  ```
+  ```rust
+  pub struct TrapContext {
+      pub x: [usize; 32],
+      pub sstatus: Sstatus,
+      pub sepc: usize,
+  }
+  ```
+*调用trap_handler*
+```
+# set input argument of trap_handler(cx: &mut TrapContext)
+mv a0, sp
+call trap_handler
+```
+让寄存器 `a0` 指向内核栈的栈指针也就是我们刚刚保存的 Trap 上下文的地址，这是由于我们接下来要调用 `trap_handler` 进行 Trap 处理，它的第一个参数 `cx` 由调用规范要从 `a0` 中获取。
+#newpara()
+*恢复Trap上下文*
+- 大部分是保存寄存器的反向操作；
+- 最后一步是`sret`指令 `//从内核态返回到用户态`
+*`trap_handler`处理syscall*
+```rust
+#[no_mangle]
+pub fn trap_handler(cx: &mut TrapContext) -> &mut TrapContext {
+    let scause = scause::read();
+    let stval = stval::read();
+    match scause.cause() {
+        Trap::Exception(Exception::UserEnvCall) => {
+            cx.sepc += 4;
+            cx.x[10] = syscall(cx.x[17], [cx.x[10], cx.x[11], cx.x[12]]) as usize;
+        }
+    ...
+    }
+    cx
+}
+
+pub fn sys_exit(xstate: i32) -> ! {
+    println!("[kernel] Application exited with code {}", xstate);
+    run_next_app()
+}
+```
+
+==== 执行应用程序
+
+*应用程序的执行时机*
+- 当批处理操作系统初始化完成
+- 某个应用程序运行结束或出错
+*让应用程序执行*
+- 从内核态切换到用户态
+  - 准备好应用的上下文`Trap上下文`
+  - 恢复应用的相关寄存器
+  - 特别是应用用户栈指针和执行地址
+  - *返回用户态让应用执行*
+*返回用户态让应用执行*
+- 从内核态切换到用户态
+  - `sret`指令的硬件逻辑：
+    - 恢复响应中断/异常
+    - CPU Mode从S-Mode 回到U-Mode
+    - `pc <-- spec` CSR
+    - 继续运行
+*切换到下一个应用程序*
+- 调用 `run_next_app` 函数切换到下一个应用程序：
+  - 构造应用程序开始执行所需的 Trap 上下文
+  - 通过 `__restore` 函数，从刚构造的 Trap 上下文中，恢复应用程序执行的部分寄存器
+  - 设置 `sepc` CSR的内容为应用程序入口点 `0x80400000`
+  - 切换 `scratch` 和 `sp` 寄存器，设置 `sp` 指向应用程序用户栈
+  - 执行 `sret` 从 S 特权级切换到 U 特权级
+*构造Trap上下文*
+```rust
+impl TrapContext {
+    pub fn set_sp(&mut self, sp: usize) { self.x[2] = sp; }
+    pub fn app_init_context(entry: usize, sp: usize) -> Self {
+        let mut sstatus = sstatus::read();
+        sstatus.set_spp(SPP::User);
+        let mut cx = Self {
+            x: [0; 32],
+            sstatus,
+            sepc: entry,
+        };
+        cx.set_sp(sp);
+        cx
+```
+#newpara()
+*运行下一程序*
+```rust
+ub fn run_next_app() -> ! {
+    ...
+    unsafe {
+        app_manager.load_app(current_app);
+    }
+    ...
+    unsafe {
+        __restore(KERNEL_STACK.push_context(
+            TrapContext::app_init_context(APP_BASE_ADDRESS, USER_STACK.get_sp())
+        ) as *const _ as usize);
+    }
+    panic!("Unreachable in batch::run_current_app!");
+}
+```
+```asm
+__restore:
+    # case1: start running app by __restore
+    # case2: back to U after handling trap
+    mv sp, a0
+    # now sp->kernel stack(after allocated), sscratch->user stack
+    # restore sstatus/sepc
+    ld t0, 32*8(sp)
+    ld t1, 33*8(sp)
+    ld t2, 2*8(sp)
+    csrw sstatus, t0
+    csrw sepc, t1
+    csrw sscratch, t2
+# restore general-purpuse registers except sp/tp
+    ld x1, 1*8(sp)
+    ld x3, 3*8(sp)
+    .set n, 5
+    .rept 27
+        LOAD_GP %n
+        .set n, n+1
+    .endr
+    # release TrapContext on kernel stack
+    addi sp, sp, 34*8
+    # now sp->kernel stack, sscratch->user stack
+    csrrw sp, sscratch, sp
+    sret
+```
+
+#note(subname: [小结])[
+  - 编译过程
+    - 应用、内核
+  - 数据结构
+    - `app_manager, TrapContext`
+  - 系统调用执行过程
+  - 第一次从内核态到用户态的切换过程
+]

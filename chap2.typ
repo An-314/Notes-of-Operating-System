@@ -724,6 +724,8 @@ QEMU 模拟的启动流程则可以分为三个阶段：
 
 == 实践：裸机程序 -- LibOS
 
+详见：https://rcore-os.cn/rCore-Tutorial-Book-v3/chapter1/index.html
+
 === 实验目标和思路
 
 *LibOS的实验目标*
