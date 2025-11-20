@@ -1070,5 +1070,833 @@ inode状态检查
 - 对于非常大的磁盘卷，扫描整个磁盘，以查找所有已分配的块并读取整个目录树，可能需要几分钟或几小时。
 - 可能丢数据！
 
-
 === 日志文件系统
+
+崩溃一致性的问题在前面已经看到 —— 追加一个数据块需要更新：
+- inode
+- data bitmap
+- data block
+三者必须“一起出现”或“不出现”，否则就会有：
+- 指针指向垃圾数据
+- 位图和 inode 不一致
+- 块泄露
+- 文件读取时读到旧内容或损坏数据
+日志（Journal）机制就是为解决这个问题而设计的。
+
+==== 日志
+
+*日志（或预写日志）*
+- 预写日志（write-ahead logging）
+- 借鉴数据库管理系统的想法
+- 在文件系统中，出于历史原因，通常将预写日志称为日志（journaling）
+- 第一个实现它的文件系统是Cedar（1988年）
+- 许多现代文件系统都使用这个想法，包括Linux ext3和ext4、reiserfs、IBM的JFS、SGI的XFS和Windows NTFS。
+
+*预写日志的思路*
+- 更新磁盘时，在覆写结构之前，首先写下一点小注记（在磁盘上的其他地方，在一个众所周知的位置），描述你将要做的事情
+- 写下这个注记就是“预写”部分，把它写入一个结构，并组织成“日志”
+  - 日志是连续追加写
+
+*预写日志的崩溃恢复*
+- 通过将注记写入磁盘，可以保证在更新（覆写）正在更新的结构期间发生崩溃时，能够返回并查看你所做的注记，然后重试
+- 在崩溃后准确知道要修复的内容（以及如何修复它），而不必扫描整个磁盘
+- 日志功能通过在更新期间增加了一些工作量，大大减少了恢复期间所需的工作量
+
+写操作流程：
+- 写日志：我打算修改 inode（I[v2]）、位图（B[v2]）、数据（Db）
+- 提交日志：告诉系统这批日志有效（TxE）
+- 将真实数据写入文件系统（checkpoint）
+- 回收日志空间
+这样能保证：
+- 崩溃后，只需查看日志，不用扫描整个磁盘
+- 如果日志已提交但实际写入未完成 → 重做日志（redo）
+- 如果日志未提交 → 直接丢弃（这批操作根本不算发生过）
+
+==== 数据日志（data journaling）
+
+*数据日志（data journaling）*
+```
+TxB       I[v2]       B[v2]       Db      TxE
+^                                         ^
+事务开始块                                 事务结束块
+```
+这是一个事务 (transaction)，包含：
+- TxB：事务开始（Transaction Begin）
+- 一组需要写入的块（inode、bitmap、data）
+- TxE：事务结束（Transaction End）
+- 数据日志写到磁盘上（写日志）
+- 更新磁盘，覆盖相关结构（写真实数据） (checkpoint)
+  - I[V2] B[v2] Db
+
+*写入日志期间发生崩溃*
+- 磁盘内部可以（1）写入TxB、I[v2]、B[v2]和TxE，然后（2）才写入Db。
+- 如果磁盘在（1）和（2）之间断电，那么磁盘上会变成：
+  ```
+  TxB       I[v2]       B[v2]       ??      TxE
+  ```
+*数据日志的两步事务写入*
+- 为避免该问题，文件系统分两步发出事务写入。
+  - 将除TxE块之外的所有块写入日志，同时发出这些写入操作
+  - 当这些写入完成时，日志将看起来像这样（假设又是文件追加的工作负载）：
+  ```
+  TxB       I[v2]       B[v2]       Db      ??
+  ```
+  当这些写入完成时，文件系统会发出TxE块的写入，从而使日志处于最终的安全状态：
+  ```
+  TxB       I[v2]       B[v2]       Db      TxE
+  ```
+
+*数据日志的更新流程*
+- 日志写入 Journal write：
+  - 将事务的内容（包括TxB、元数据和数据）写入日志，等待这些写入完成。
+- 日志提交 Journal Commit：
+  - 将事务提交块（包括TxE）写入日志，等待写完成，事务被认为已提交（committed）。
+- 加检查点 Checkpoint
+  - 将更新内容（元数据和数据）写入其最终的磁盘位置。
+
+*数据日志恢复流程（Crash Recovery）*
+- 情形1：崩溃发生在 TxE 写入之前（journal commit 前）
+  - 日志状态：不完整（没有 TxE）→ 整个事务丢弃→ 原文件系统未发生任何改变 → 一致
+  - 文件系统可以丢掉之前写入的log。由于磁盘具体位置的bitmap，inodes，data blocks都没变，所以可以确保文件系统一致性。
+- 情形2：崩溃发生在 TxE 之后 checkpoint 之前
+  - 日志状态：完整（有 TxB + TxE）→ 文件系统启动时：
+    - 扫描日志
+    - 发现已提交事务
+    - 但真实文件系统没有 checkpoint
+    - 重放（redo）日志：将 I[v2]、B[v2]、Db 再次写入真实位置
+  - 文件系统在启动时候，可以扫描所有已经commited的log，然后针对每一个log记录操作进行replay，即recovery的过程中执行Checkpoint，将log的信息回写到磁盘对应的位置。这种操作也成为redo logging。
+- 情形3：崩溃发生在 checkpoint 之后
+  - 真实文件已经更新成功，日志是否写完无所谓。
+  - 都已经成功回写到磁盘了，文件系统的bitmap、inodes、data blocks也能确保一致性。
+- 在此更新序列期间的任何时间都可能发生崩溃。
+  - 如果崩溃发生在将事务安全地写入日志之前
+  - 如果崩溃是在事务提交到日志之后，但在检查点完成之前发生
+
+==== 日志文件系统的性能优化
+
+*日志超级块 journal superblock*
+- 单独区域存储
+- 批处理日志更新
+- 循环日志回收与复用
+  ```
+  Journal Super Tx1 Tx2 Tx3 ... TxN
+  ```
+- *日志超级块的更新过程*
+  - Journal write：将TxB以及对应的文件操作写入到事务中
+  - Journal commit：写入TxE，并等待完成。完成后，这个事务是committed。
+  - Checkpoint：将事务中的数据，分别各自回写到各自的磁盘位置中。
+  - Free: 一段时间后，通过更新日志记录，超级块将交易记录标记为空闲（释放掉）
+
+*元数据日志 Metadata Journaling*
+- 什么时候应该将数据块 Db 写入磁盘？
+  - 数据写入的顺序对于仅元数据的日志记录很重要
+  - 如果在事务（包含 I [v2] 和 B [v2]）完成后将 Db 写入磁盘，这样有问题吗？
+- *元数据日志的更新过程*
+  - Data write：写入数据到磁盘的对应位置
+  - Journal metadata write：将TxB以及对应的文件metadata操作写入到事务中
+  - Journal commit：写入TxE，并等待完成。完成后，这个事务是committed。
+  - Checkpoint metadata：将事务中的metadata的操作相关数据，分别各自回写到各自的磁盘位置中。
+  - Free：释放journal区域的log记录
+  - 通过强制首先写入数据，文件系统可保证指针永远不会指向垃圾数据
+- Data Journaling时间线 v.s. Metadata Journaling时间线
+  #figure(
+    image("pic/2025-11-20-13-46-20.png", width: 80%),
+    numbering: none,
+  )
+
+*不同日志模式*
+- Journal Mode: 操作的metadata和file data都会写入到日志中然后提交，这是最慢的。
+- Ordered Mode: 只有metadata操作会写入到日志中，但是确保数据在日志提交前写入到磁盘中，速度较快
+- Writeback Mode: 只有metadata操作会写入到日志中，且不确保数据在日志提交前写入(数据可能丢失)，速度最快
+
+== 实践：支持文件的操作系统 Filesystem OS(FOS)
+
+https://rcore-os.cn/rCore-Tutorial-Book-v3/chapter6/index.html
+
+=== 实验目标和步骤
+
+==== 实验目标
+
+*以往实验目标*
+- Process OS: 增强进程管理和资源管理
+- Address Space OS: APP不用考虑其运行时的起始执行地址，隔离APP访问的内存地址空间
+- multiprog & time-sharing OS: 让APP有效共享CPU，提高系统总体性能和效率
+- BatchOS: 让APP与OS隔离，加强系统安全，提高执行效率
+- LibOS: 让APP与HW隔离，简化应用访问硬件的难度和复杂性
+
+*实验目标*：支持数据持久保存
+- 以文件形式保存持久数据，并能进行文件数据读写
+- 进程成为文件资源的使用者
+- 能够在应用层面发出如下系统调用请求：
+  - open/read/write/close
+  #figure(
+    image("pic/2025-11-20-13-54-27.png", width: 80%),
+    numbering: none,
+  )
+
+*Filesystem OS (FOS)*
+#figure(
+  image("pic/2025-11-20-13-53-29.png", width: 80%),
+  numbering: none,
+)
+
+*历史：UNIX文件系统*
+- 1965：描述未来的 MULTICS 操作系统
+  - 指明方向的舵手
+    - 文件数据看成是一个无格式的字节流
+    - 第一次引入了层次文件系统的概念
+  - 启发和造就了UNIX文件系统
+    - 一切皆文件
+
+*实验要求*
+- 理解文件系统/文件概念
+- 理解文件系统的设计与实现
+- 理解应用$<->$库$<->$...$<->$设备驱动的整个文件访问过程
+- 会写支持文件系统的OS
+
+*实验中的文件类型*
+- 当前
+  - Regular file 常规文件
+  - Directory 目录文件
+- 未来
+  - Link file 链接文件
+  - Device 设备文件
+  - Pipe 管道文件
+
+*总体思路*
+
+#figure(
+  image("pic/2025-11-20-13-59-36.png", width: 80%),
+  numbering: none,
+)
+
+==== 文件系统接口和数据结构
+
+*文件访问流程*
+#figure(
+  image("pic/2025-11-20-14-00-11.png", width: 80%),
+  numbering: none,
+)
+
+*文件系统访问接口*
+#figure(
+  image("pic/2025-11-20-14-01-17.png", width: 80%),
+  numbering: none,
+)
+
+*文件系统的数据结构*
+#figure(
+  image("pic/2025-11-20-14-02-48.png", width: 80%),
+  numbering: none,
+)
+
+#figure(
+  image("pic/2025-11-20-14-05-02.png", width: 80%),
+  numbering: none,
+)
+
+==== 实践步骤
+
+*实验步骤*
+- 编译：内核独立编译，单独的内核镜像
+- 编译：应用程序编译后，组织形成文件系统镜像
+- 构造：进程的管理与初始化，建立基于页表机制的虚存空间
+- 构造：构建文件系统
+- 运行：特权级切换，进程与OS相互切换
+- 运行：切换地址空间，跨地址空间访问数据
+- 运行：从文件系统加载应用，形成进程
+- 运行：数据访问：内存--磁盘，基于文件的读写
+
+*实践步骤*
+```bash
+git clone https://github.com/rcore-os/rCore-Tutorial-v3.git
+cd rCore-Tutorial-v3
+git checkout ch6
+cd os
+make run
+```
+```bash
+[RustSBI output]
+...
+filetest_simple
+fantastic_text
+**************/
+Rust user shell
+>>
+```
+操作系统启动shell后，用户可以在shell中通过敲入应用名字来执行应用。从用户界面上，没看出文件系统的影子。在这里我们运行一下本章的测例 filetest_simple ：
+```
+>> filetest_simple
+file_test passed!
+Shell: Process 2 exited with code 0
+>>
+```
+它会将 Hello, world! 输出到另一个文件 filea，并读取里面的内容确认输出正确。我们也可以通过命令行工具 cat_filea 来更直观的查看 filea 中的内容：
+```
+>> cat_filea
+Hello, world!
+Shell: Process 2 exited with code 0
+>>
+```
+
+=== 代码结构
+
+*软件架构*
+- 文件操作：open, read, write, close
+*代码结构*
+- 添加easy-fs
+  ```
+  ├── easy-fs(新增：从内核中独立出来的一个简单的文件系统 EasyFileSystem 的实现)
+  │   ├── Cargo.toml
+  │   └── src
+  │       ├── bitmap.rs(位图抽象)
+  │       ├── block_cache.rs(块缓存层，将块设备中的部分块缓存在内存中)
+  │       ├── block_dev.rs(声明块设备抽象接口 BlockDevice，需要库的使用者提供其实现)
+  │       ├── efs.rs(实现整个 EasyFileSystem 的磁盘布局)
+  │       ├── layout.rs(一些保存在磁盘上的数据结构的内存布局)
+  │       ├── lib.rs（定义的必要信息）
+  │       └── vfs.rs(提供虚拟文件系统的核心抽象，即索引节点 Inode)
+  ├── easy-fs-fuse(新增：将当前 OS 上的应用可执行文件按照 easy-fs 的格式进行打包)
+  │   ├── Cargo.toml
+  │   └── src
+  │       └── main.rs
+  ├── os
+  │   ├── build.rs
+  │   ├── Cargo.toml(修改：新增 Qemu 和 K210 两个平台的块设备驱动依赖 crate)
+  │   ├── Makefile(修改：新增文件系统的构建流程)
+  │   └── src
+  │       ├── config.rs(修改：新增访问块设备所需的一些 MMIO 配置)
+  │       ├── console.rs
+  │       ├── drivers(修改：新增 Qemu 和 K210 两个平台的块设备驱动)
+  │       │   ├── block
+  │       │   │   ├── mod.rs(将不同平台上的块设备全局实例化为 BLOCK_DEVICE 提供给其他模块使用)
+  │       │   │   ├── sdcard.rs(K210 平台上的 microSD 块设备, Qemu不会用)
+  │       │   │   └── virtio_blk.rs(Qemu 平台的 virtio-blk 块设备)
+  │       │   └── mod.rs
+  ```
+
+=== 应用程序设计
+
+==== 文件和目录
+
+*理解文件*
+- 对持久存储（persistent storage）的虚拟化和抽象
+  - Tape，Disk，SSD...
+  - 用户用它们保存真正关心的数据
+*从应用角度理解文件*
+- 文件是一个特殊的线性字节数组，每个字节都可以读取或写入。
+- 每个文件都有一个给用户可理解的字符串名字
+- 每个文件都有一个应用程序员可理解的某种低级名称-文件描述符 (file descriptor)
+- 显示文件的线性字节内容
+  ```bash
+  hexedit os/src/main.rs
+  ```
+*从内核角度理解文件*
+- 文件是存储设备上的数据，需要通过文件系统进行管理
+- 管理文件的结构称为inode，inode描述了文件的各种属性和数据位置
+- 显示文件的线性字节内容
+  ```bash
+  cd os ; stat src/main.rs
+  ```
+*从应用角度理解目录*
+- 目录是一个特殊的文件，它的内容包含一个位于该目录下的文件名列表
+- 显示目录内容
+  ```bash
+  cd os; ls -la
+  ```
+*从内核角度理解目录*
+- 目录是一个特殊的文件，它的内容包含一个（用户可读文件名字，inode）对的数组
+- `DirEntry`数组
+  ```rust
+  pub struct DirEntry {
+      name: [u8; NAME_LENGTH_LIMIT + 1],
+      inode_number: u32,
+  }
+  ```
+
+==== 文件访问系统调用
+
+- `open()`系统调用
+  ```rust
+  /// 功能：打开一个常规文件，并返回可以访问它的文件描述符。
+  /// 参数：path 描述要打开的文件的文件名
+  /// （简单起见，文件系统不需要支持目录，所有的文件都放在根目录 / 下），
+  /// flags 描述打开文件的标志，具体含义下面给出。
+  /// 返回值：如果出现了错误则返回 -1，否则返回打开常规文件的文件描述符。
+  /// 可能的错误原因是：文件不存在。
+  /// syscall ID：56
+  fn sys_open(path: &str, flags: u32) -> isize
+  ```
+- `close()`系统调用
+  ```rust
+  /// 功能：当前进程关闭一个文件。
+  /// 参数：fd 表示要关闭的文件的文件描述符。
+  /// 返回值：如果成功关闭则返回 0 ，否则返回 -1 。
+  /// 可能的出错原因：传入的文件描述符并不对应一个打开的文件。
+
+  /// syscall ID：57
+  fn sys_close(fd: usize) -> isize
+  ```
+- `read()`系统调用
+  ```rust
+  /// 功能：当前进程读取文件。
+  /// 参数：fd 表示要读取文件的文件描述符。
+  /// 返回值：如果成功读入buf，则返回 读取的字节数，否则返回 -1 。
+  /// 可能的出错原因：传入的文件描述符并不对应一个打开的文件。
+
+  /// syscall ID：63
+  sys_read(fd: usize, buf: *const u8, len: usize) -> isize
+  ```
+- `write()`系统调用
+  ```rust
+  /// 功能：当前进程写入一个文件。
+  /// 参数：fd 表示要写入文件的文件描述符。
+  /// 返回值：如果成功把buf写入，则返回写入字节数 ，否则返回 -1 。
+  /// 可能的出错原因：传入的文件描述符并不对应一个打开的文件。
+
+  /// syscall ID：64
+  fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize
+  ```
+- 应用程序示例
+  ```rust
+  // user/src/bin/filetest_simple.rs
+  pub fn main() -> i32 {
+      let test_str = "Hello, world!";
+      let filea = "filea\0";
+      // 创建文件filea，返回文件描述符fd(有符号整数)
+      let fd = open(filea, OpenFlags::CREATE | OpenFlags::WRONLY);
+      write(fd, test_str.as_bytes());               // 把test_str写入文件中
+      close(fd);                                    // 关闭文件
+      let fd = open(filea, OpenFlags::RDONLY);      // 只读方式打开文件
+      let mut buffer = [0u8; 100];                  // 100字节的数组缓冲区
+      let read_len = read(fd, &mut buffer) as usize;// 读取文件内容到buffer中
+      close(fd);                                    // 关闭文件
+  }
+  ```
+
+=== 内核程序设计
+
+==== 核心数据结构
+
+*核心数据结构*
+- 进程管理文件
+  - 目录、文件
+  - inode
+  - 文件描述符
+  - 文件描述符表
+- 文件位于根目录`ROOT_INODE`中
+- 目录的内容是`DirEntry`组成的数组
+- 文件/目录用`inode`表示
+  ```rust
+  pub struct DirEntry {
+      name: [u8; NAME_LENGTH_LIMIT + 1],
+      inode_number: u32,
+  }
+  ...
+  let fd = open(filea, OpenFlags::RDONLY);
+  ```
+- 打开的文件在进程中`fd_table`中
+- `fd_table`是`OSInode`组成的数组
+  ```rust
+  pub struct TaskControlBlockInner {
+      pub fd_table: ... //文件描述符表
+
+  pub struct OSInode {//进程管理的inode
+      readable: bool,  writable: bool,
+      inner: UPSafeCell<OSInodeInner>,//多线程并发安全
+  }
+
+  pub struct OSInodeInner {
+      offset: usize, //文件读写的偏移位置
+      inode: Arc<Inode>,//存储设备inode，线程安全的引用计数指针
+  }
+  ```
+- 超级块
+  - 超级块(SuperBlock)描述文件系统全局信息
+    ```rust
+    pub struct SuperBlock {
+        magic: u32,
+        pub total_blocks: u32,
+        pub inode_bitmap_blocks: u32,
+        pub inode_area_blocks: u32,
+        pub data_bitmap_blocks: u32,
+        pub data_area_blocks: u32,
+    }
+    ```
+- inode/data位图
+  - 位图(bitmap)描述文件系统全局信息
+  - 在 easy-fs 布局中存在两类位图
+    - 索引节点位图
+    - 数据块位图
+    ```rust
+    pub struct Bitmap {
+        start_block_id: usize,
+        blocks: usize,
+    }
+    ```
+- disk_inode
+  - `read_at`和`write_at`把文件偏移量和buf长度转换为一系列的数据块编号，并进行通过`get_block_cache`数据块的读写
+  - `get_block_id`方法体现了 DiskInode 最重要的数据块索引功能，它可以从索引中查到它自身用于保存文件内容的第 block_id 个数据块的块编号，这样后续才能对这个数据块进行访问
+  - 磁盘索引节点(DiskInode)描述文件信息和数据
+    ```rust
+    pub struct DiskInode {
+        pub size: u32,
+        pub direct: [u32; INODE_DIRECT_COUNT],
+        pub indirect1: u32,
+        pub indirect2: u32,
+        type_: DiskInodeType,
+    }
+    ```
+- disk_data
+  - 数据块与目录项
+    ```rust
+    type DataBlock = [u8; BLOCK_SZ];
+
+    pub struct DirEntry {
+        name: [u8; NAME_LENGTH_LIMIT + 1],
+        inode_number: u32,
+    }
+    ```
+- blk_cache
+  - pub const BLOCK_SZ: usize = 512;
+    ```rust
+    pub struct BlockCache {
+        cache: [u8; BLOCK_SZ], //512 字节数组
+        block_id: usize, //对应的块编号
+        //底层块设备的引用，可通过它进行块读写
+        block_device: Arc<dyn BlockDevice>,
+        modified: bool, //它有没有被修改过
+    }
+    ```
+    `get_block_cache` ：取一个编号为 `block_id` 的块缓存
+
+==== 文件管理机制
+
+*文件管理机制概述*
+- 文件系统初始化
+- 打开与关闭文件
+- 基于文件加载应用
+- 读写文件
+
+*文件系统初始化*
+- 打开块设备 BLOCK_DEVICE ；
+- 从块设备 BLOCK_DEVICE 上打开文件系统；
+- 从文件系统中获取根目录的 inode 。
+  ```rust
+  lazy_static! {//宏定义静态变量
+      pub static ref BLOCK_DEVICE = Arc::new(BlockDeviceImpl::new());
+  ......
+  lazy_static! {
+      pub static ref ROOT_INODE: Arc<Inode> = {
+          let efs = EasyFileSystem::open(BLOCK_DEVICE.clone());
+          Arc::new(EasyFileSystem::root_inode(&efs))
+  ```
+
+*打开(创建)文件*
+```rust
+pub fn sys_open(path: *const u8, flags: u32) -> isize {
+    //调用open_file函数获得一个OSInode结构的inode
+    if let Some(inode) = open_file(path.as_str(),
+                           OpenFlags::from_bits(flags).unwrap()) {
+        let mut inner = task.inner_exclusive_access();
+        let fd = inner.alloc_fd();  //得到一个空闲的fd_table项的idx，即fd
+        inner.fd_table[fd] = Some(inode); //把inode填入fd_table[fd]中
+        fd as isize  //返回fd
+    ...
+```
+如果失败，会返回 -1
+```rust
+fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
+  ......
+ ROOT_INODE.create(name) //在根目录中创建一个DireEntry<name，inode>
+                .map(|inode| {//创建进程中fd_table[OSInode]
+                    Arc::new(OSInode::new(
+                        readable,
+                        writable,
+                        inode,  ))
+                })
+```
+在根目录`ROOT_INODE`中创建一个文件，返回`OSInode`
+
+*打开(查找)文件*
+```rust
+fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
+  ......
+ ROOT_INODE.find(name) //在根目录中查找DireEntry<name，inode>
+            .map(|inode| { //创建进程中fd_table[OSInode]
+                Arc::new(OSInode::new(
+                    readable,
+                    writable,
+                    inode ))
+            })
+```
+在根目录`ROOT_INODE`中找到一个文件，返回`OSInode`
+
+*关闭文件*
+```rust
+pub fn sys_close(fd: usize) -> isize {
+    let task = current_task().unwrap();
+    let mut inner = task.inner_exclusive_access();
+    ......
+    inner.fd_table[fd].take();
+    0
+}
+```
+`sys_close`：将进程控制块中的文件描述符表对应的一项改为 None 代表它已经空闲即可，同时这也会导致文件的引用计数减一，当引用计数减少到 0 之后文件所占用的资源就会被自动回收。
+
+*基于文件加载应用*（ELF可执行文件格式）
+```rust
+pub fn sys_exec(path: *const u8) -> isize {
+    if let Some(app_inode) = open_file(path.as_str(), ...) {
+        let all_data = app_inode.read_all();
+        let task = current_task().unwrap();
+        task.exec(all_data.as_slice()); 0
+} else { -1 }
+```
+当获取应用的 ELF 文件数据时，首先调用 `open_file` 函数，以只读方式打开应用文件并获取它对应的 `OSInode` 。接下来可以通过 `OSInode::read_all` 将该文件的数据全部读到一个向量 `all_data` 中
+
+*读写文件*
+- 基于文件抽象接口和文件描述符表
+- 可以按照无结构的字节流在处理基本的文件读写
+  ```rust
+  pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
+        if let Some(file) = &inner.fd_table[fd] {
+            file.write(
+                UserBuffer::new(translated_byte_buffer(token, buf, len))
+            ) as isize
+
+  pub fn sys_read(fd: usize, buf: *const u8, len: usize) -> isize {
+        if let Some(file) = &inner.fd_table[fd] {
+            file.read(
+                UserBuffer::new(translated_byte_buffer(token, buf, len))
+            ) as isize
+  ```
+  操作系统都是通过文件描述符在当前进程的文件描述符表中找到某个文件，无需关心文件具体的类型。
+
+#note(subname: [easy-fs总结])[
+  *ch6 新增数据结构与关系总览（Easy-FS + OS 文件系统层）*
+
+  从 ch6 开始，本实验加入了一个完整的 *块设备 + 文件系统 + VFS 抽象 + OS 文件接口 + 文件描述符表*。
+
+  整个结构分 4 层：
+
+  ```
+  用户进程（系统调用 open/read/write/...）
+          ↓
+  OS 文件层（File trait, OSInode, FD table）
+          ↓
+  VFS 层（easy-fs::Inode）
+          ↓
+  Easy-FS 文件系统层（磁盘 inode / 数据块 / bitmap）
+          ↓
+  块设备（QEMU virtio-blk）
+  ```
+
+  下文将按模块依次总结所有新增结构。
+
+  1. 块设备层（Block Device Layer）
+    - ✦ BlockDevice trait
+      - 路径：`easy-fs/src/block_dev.rs`
+      ```rust
+      pub trait BlockDevice: Send + Sync + Any {
+          fn read_block(&self, block_id: usize, buf: &mut [u8]);
+          fn write_block(&self, block_id: usize, buf: &[u8]);
+      }
+      ```
+      *含义*：定义一个通用的“块设备”接口。底层可以是 QEMU 的 virtio-blk，也可以是文件系统打包工具 easy-fs-fuse 的 BlockFile。所有文件系统操作最终都会通过 BlockDevice 读写磁盘块。
+  2. 块缓存层（Block Cache Layer）
+    - ✦ BlockCache
+      - 路径：`easy-fs/src/block_cache.rs`
+      - 缓存单个磁盘块，提供：
+        - read / modify 块内数据
+        - 自动回写（Drop 时 sync）
+        - Arc + Mutex 管理共享缓存
+    - ✦ BlockCacheManager + 全局 BLOCK_CACHE_MANAGER
+      - 维持固定数量（16）的块缓存
+        - LRU 替换
+        - 自动 sync 全部缓存
+    - 关系：
+    ```
+    EasyFileSystem
+        ↓
+    get_block_cache
+        ↓
+    BlockCacheManager
+        ↓
+    BlockCache（单个块）
+    ```
+  3. 磁盘布局层（Disk Layout Layer）
+    - 路径：`easy-fs/src/layout.rs`
+    - 定义磁盘中 *真正存储的结构体*：
+    - ✦ SuperBlock
+      - 描述整个文件系统布局：
+        - 总块数
+        - inode 位图大小
+        - data 位图大小
+        - inode 区域大小
+        - 数据区大小
+        - magic number
+    - ✦ DiskInode
+      - 磁盘中的 inode 实际存储结构：
+      - 字段：
+        - size（字节）
+        - type（文件或目录）
+        - direct[28]
+        - indirect1
+        - indirect2
+      - 包含方法：
+        - read_at / write_at
+        - increase_size
+        - clear_size
+        - get_block_id（根据逻辑块号找到真正的数据块）
+    - 关系：
+    ```
+    DiskInode -> 数据块
+              -> 完整管理直接块 / 一级间接块 / 二级间接块
+    ```
+    - ✦ DirEntry
+      - 目录项：
+      ```rust
+      pub struct DirEntry {
+          name: [u8; 28],
+          inode_id: u32,
+      }
+      ```
+  4. EasyFileSystem 层（easy-fs/src/efs.rs）
+    - 文件系统的核心抽象：
+    - ✦ EasyFileSystem
+      - 字段：
+      #three-line-table[
+        | 字段                     | 含义          |
+        | ---------------------- | ----------- |
+        | block_device           | 底层块设备       |
+        | inode_bitmap           | inode 位图分配器 |
+        | data_bitmap            | 数据块位图分配器    |
+        | inode_area_start_block | inode 区起始块  |
+        | data_area_start_block  | 数据块区起始块     |
+      ]
+      - 方法：
+        - create（格式化一个 EFS）
+        - open（打开一个已有的 EFS）
+        - root_inode
+        - alloc_inode / alloc_data
+        - dealloc_data
+        - get_disk_inode_pos
+      - 关系：
+      ```
+      EasyFS -> inode_bitmap / data_bitmap
+            -> 块缓存层读写 DiskInode
+            -> 提供真正的 root Inode
+      ```
+  5. VFS 层（Virtual FS Layer）
+    - 路径：`easy-fs/src/vfs.rs`
+    - 把磁盘结构包装成“可操作”的 inode
+    - ✦ easy_fs::Inode
+      - 字段：
+        - block_id
+        - block_offset
+        - fs: Arc\<Mutex\<EasyFileSystem\>\>
+        - block_device
+      - 方法：
+        - find(name)
+        - create(name)
+        - ls()
+        - read_at / write_at
+        - clear()
+        - metadata()
+    - 关系：
+    ```
+    OSInode(内核) → Inode(VFS) → DiskInode(磁盘) → 数据块
+    ```
+  6. OS 文件层（OS FS Layer）
+    - 路径：`os/src/fs/inode.rs`
+    - 负责给 OS 提供统一的文件抽象。
+    - ✦ OSInode
+      - 包装 easy-fs 的 Inode，使之实现 File trait。
+      - 字段：
+        #three-line-table[
+          | 字段                              | 功能           |
+          | ------------------------------- | ------------ |
+          | readable                        | 是否可读         |
+          | writable                        | 是否可写         |
+          | inner: UPSafeCell\<OSInodeInner\> | 带 offset 的结构 |
+        ]
+    - ✦ OSInodeInner
+      ```rust
+      pub struct OSInodeInner {
+          offset: usize,
+          inode: Arc<Inode>,
+      }
+      ```
+      - 包含文件偏移（为每个 open 独立）
+      - 指向 easy_fs::Inode
+    - ✦ File trait（统一 IO 抽象）
+      - 路径：`os/src/fs/mod.rs`
+      ```rust
+      pub trait File {
+          fn read(&self, buf: UserBuffer) -> usize;
+          fn write(&self, buf: UserBuffer) -> usize;
+          fn get_stat(&self, stat: &mut Stat) -> isize { -1 }
+      }
+      ```
+      - 所有文件类型都实现 File：
+        - OSInode（普通文件）
+        - Stdin
+        - Stdout
+        - PipeRead / PipeWrite（ch7）
+    - ✦ ROOT_INODE
+      - easy-fs 的根目录挂载点
+      ```rust
+      lazy_static! {
+          pub static ref ROOT_INODE: Arc<Inode>
+      }
+      ```
+  7. OS 层的文件描述符表（FD table）
+    - 路径：`os/task/task.rs`
+    - 在 TaskControlBlockInner 中新增字段：
+    ```rust
+    pub fd_table: Vec<Option<Arc<dyn File>>>
+    ```
+    每打开一个文件：
+    - 生成一个 OSInode
+    - 插入 fd_table
+  8. easy-fs-fuse 打包工具
+    - 作为辅助模块用于生成 `fs.img`：
+      - BlockFile 实现 BlockDevice
+      - 将 host 文件读入 easy-fs 根目录中
+    - 与 OS 运行无直接关系，但用于构建 `fs.img`。
+
+  *总图（关键结构关系）*
+  ```
+  用户态
+   └── sys_open / read / write / close / unlink / fstat
+         ↓
+  Task.fd_table : Vec<Option<Arc<dyn File>>>
+         ↓
+  OSInode --------------→ easy_fs::Inode
+         |                         ↓
+         |                 DiskInode + DirEntry
+         ↓                         ↓
+  File trait                  数据块（BlockCache）
+         ↓                         ↓
+  UserBuffer                 BlockDevice
+  ```
+  *关键数据结构总结表*
+  #three-line-table[
+    | 层级     | 结构                             | 功能                |
+    | ------ | ------------------------------ | ----------------- |
+    | 块设备层   | BlockDevice                    | 读写磁盘块             |
+    | 缓存层    | BlockCache / BlockCacheManager | 缓存磁盘数据块           |
+    | 文件系统层  | SuperBlock                     | 描述文件系统布局          |
+    | 文件系统层  | Bitmap                         | inode/data 位图管理   |
+    | 文件系统层  | DiskInode                      | 磁盘上真实 inode       |
+    | 文件系统层  | DirEntry                       | 目录项               |
+    | 文件系统层  | EasyFileSystem                 | 文件系统核心管理          |
+    | VFS 层  | Inode                          | 对 DiskInode 的抽象封装 |
+    | OS 文件层 | OSInode                        | 内核中的文件对象          |
+    | OS 文件层 | File trait                     | 统一文件访问接口          |
+    | OS 文件层 | Stdin / Stdout                 | 控制台 I/O           |
+    | 进程层    | fd_table                       | 每个进程的文件描述符表       |
+  ]
+
+]
