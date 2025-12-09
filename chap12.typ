@@ -1504,16 +1504,63 @@ Semaphore::P() {
   image("pic/2025-12-10-02-15-20.png", width: 80%),
   numbering: none,
 )
-*安全状态的判断*
+- n = 线程数
+- m = 资源种类数
+- Max[n][m]（最大需求矩阵）
+  - 线程 Ti 最多可能需要 Rj 的多少个实例。
+- Allocation[n][m]（已分配矩阵）
+  - Ti 当前已获得的资源实例数。
+- Need[n][m]（剩余需求矩阵）
+  - Ti 未来还需要多少资源：Max - Allocation
+- Available[m]（可用资源向量）
+  - 系统中每种资源类型当前可用的实例数。
+*安全状态的判断*Safety Algorithm
 #figure(
   image("pic/2025-12-10-02-15-35.png", width: 80%),
   numbering: none,
 )
++ 初始化
+  ```
+  Work = Available
+  Finish[i] = false (所有进程都未完成)
+  ```
++ 寻找一个满足条件的线程 Ti
+  ```
+  Finish[i] = false
+  Need[i] ≤ Work （能立即满足 Ti 的需求）
+  ```
+  若找不到，跳到 Step 4
++ 模拟 Ti 运行完
+  ```
+  Work = Work + Allocation[i]
+  Finish[i] = true
+  回到 Step 2
+  ```
++ 检查是否所有 Finish[i] = true
+  - 是 → 安全
+  - 否 → 不安全
 *银行家算法的完整描述*
 #figure(
   image("pic/2025-12-10-02-15-50.png", width: 80%),
   numbering: none,
 )
+- 检查是否超过最大需求
+  ```
+  If Request > Need[i] → Error（非法请求）
+  ```
+- 检查资源是否够用
+  ```
+  If Request > Available → Ti 必须等待
+  ```
+- 试探性分配（Tentative Allocation）
+  ```
+  Available  = Available - Request
+  Allocation = Allocation + Request
+  Need       = Need - Request
+  ```
+- 调用安全性算法
+  - 如果安全 → 允许分配
+  - 如果不安全 → 撤销试探分配，Ti 必须等待
 *银行家算法示例1*
 #grid(columns: (1fr, 1fr))[
   #figure(
@@ -1570,6 +1617,29 @@ Semaphore::P() {
   image("pic/2025-12-10-02-19-56.png", width: 80%),
   numbering: none,
 )
++ 初始化
+  ```
+  Work = Available  // 当前可用资源
+  Finish[i] =
+      true  如果 Allocation[i] == 0     // 该线程没有占资源，不会导致死锁
+      false 如果 Allocation[i] > 0      // 占资源但未完成
+  ```
++ 寻找可完成的线程 Ti
+  ```
+  Finish[i] == false（线程还没完成）
+  Request[i] <= Work（它尚需的资源 <= 当前可用资源 Work）
+  ```
+  - 如果找到满足的 Ti → 进入 Step 3
+  - 如果找不到 → 进入 Step 4
++ 模拟该线程完成
+  ```
+  Work = Work + Allocation[i]   // 释放该线程占有的资源
+  Finish[i] = true
+  ```
+  然后 回到 Step 2 继续找下一个线程
++ 检测死锁
+  - 如果存在某个 `Finish[i] == false`，
+  - 则系统处于 死锁状态，这些线程无法完成
 *死锁检测示例1*
 #figure(
   image("pic/2025-12-10-02-20-15.png", width: 80%),
