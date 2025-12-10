@@ -1605,7 +1605,7 @@ Semaphore::P() {
 - 定期调用死锁检测算法来搜索图中是否存在死锁
 - 出现死锁时，用死锁恢复机制进行恢复
   #figure(
-    image("pic/2025-12-10-02-18-38.png", width: 80%),
+    image("pic/2025-12-10-02-18-38.png", width: 40%),
     numbering: none,
   )
 *死锁检测算法数据结构*
@@ -1681,3 +1681,427 @@ Semaphore::P() {
   - 返回到一些安全状态, 重启进程到安全状态
 - 可能出现饥饿
   - 同一进程可能一直被选作被抢占者
+
+== 实践：支持同步互斥的OS(SMOS)
+
+=== 实验安排
+
+*以往目标*
+- 提高性能、简化开发、加强安全、支持数据持久保存、支持应用的灵活性，支持进程间交互，支持线程和协程
+- TCOS：支持线程和协程 ； IPC OS：进程间交互
+- Filesystem OS：支持数据持久保存
+- Process OS: 增强进程管理和资源管理
+- Address Space OS: 隔离APP访问的内存地址空间
+- multiprog & time-sharing OS: 让APP共享CPU资源
+- BatchOS： 让APP与OS隔离，加强系统安全，提高执行效率
+- LibOS: 让APP与HW隔离，简化应用访问硬件的难度和复杂性
+
+*进化目标*
+- 在多线程中支持对共享资源的同步互斥访问
+- 互斥锁机制
+- 信号量机制
+- 管程与条件变量机制
+
+#figure(
+  image("pic/2025-12-10-12-51-39.png", width: 80%),
+  numbering: none,
+)
+
+#figure(
+  image("pic/2025-12-10-12-52-05.png", width: 80%),
+  numbering: none,
+)
+
+*历史背景*
+- 1963年前后，当时的数学家 Edsger Dijkstra和他的团队正在为Electrologica X8计算机开发一个操作系统（THE多道程序系统）的过程中，提出了信号量（Semaphore）是一种变量或抽象数据类型，用于控制多个线程对共同资源的访问。
+- Brinch Hansen(1973)和Hoare(1974)结合操作系统和Concurrent Pascal编程语言，提出了一种高级同步原语，称为管程(monitor)。一个管程是一个由过程（procedures，Pascal语言的术语，即函数）、共享变量等组成的集合。线程可调用管程中的过程。
+
+*实践步骤*
+```bash
+git clone https://github.com/rcore-os/rCore-Tutorial-v3.git
+cd rCore-Tutorial-v3
+git checkout ch8
+```
+包含了多个同步互斥相关的多线程应用程序
+```
+user/src/bin/
+├──  mpsc_sem.rs          # 基于信号量的生产者消费者问题
+├──  phil_din_mutex.rs    # 基于互斥锁的哲学家问题
+├──  race_adder_*.rs      # 各种方式的全局变量累加问题
+├──  sync_sem.rs          # 基于信号量的同步操作
+├──  test_condvar.rs      # 基于条件变量的同步操作
+```
+内核代码的主要改进部分
+```
+os/src/
+├── sync
+│   ├── condvar.rs        //条件变量
+│   ├── mod.rs
+│   ├── mutex.rs          //互斥锁
+│   ├── semaphore.rs      //信号量
+│   └── up.rs
+├── syscall
+│   ├── sync.rs //增加了互斥锁、信号量和条件变量相关系统调用
+├── task
+│   ├── process.rs //进程控制块增加了互斥锁、信号量和条件变量
+├── timer.rs     // 添加与定时相关的TimerCondVar类条件变量
+```
+比如执行哲学家问题的应用程序，展示了5个哲学家用5把叉子进行思考/进餐/休息的过程。
+```
+Rust user shell
+>> phil_din_mutex
+time cost = 7271
+'-' -> THINKING; 'x' -> EATING; ' ' -> WAITING
+#0: -------                 xxxxxxxx----------       xxxx-----  xxxxxx--xxx
+#1: ---xxxxxx--      xxxxxxx----------    x---xxxxxx
+#2: -----          xx---------xx----xxxxxx------------        xxxx
+#3: -----xxxxxxxxxx------xxxxx--------    xxxxxx--   xxxxxxxxx
+#4: ------         x------          xxxxxx--    xxxxx------   xx
+#0: -------                 xxxxxxxx----------       xxxx-----  xxxxxx--xxx
+>>
+```
+
+=== 全局变量累加应用
+
+*全局变量累加问题的多线程应用`race_adder.rs`*
+```rust
+A           //全局变量
+A=A+1       //多个线程对A进行累加
+```
+多个线程执行上述代码，真的会出现Race Condition（竞争条件）吗？
+- 并发、无序的线程在使用有限、独占、不可抢占的资源而产生矛盾称为竞争（Race）
+- 多个线程无序竞争不能被同时访问的资源而出现执行出错的问题，称为竞争条件（Race Condition）
+  ```rust
+  pub fn main() -> i32 {
+      let start = get_time();
+      let mut v = Vec::new();
+      for _ in 0..THREAD_COUNT {
+          v.push(thread_create(f as usize, 0) as usize);  // f函数是线程主体
+      }
+      let mut time_cost = Vec::new();
+      for tid in v.iter() {
+          time_cost.push(waittid(*tid));
+      }
+      println!("time cost is {}ms", get_time() - start);
+      assert_eq!(unsafe { A }, PER_THREAD * THREAD_COUNT); //比较累计值A
+      0
+  }
+  ```
+*实践步骤*
+- 全局变量累加问题的多线程应用`race_adder.rs`
+  ```rust
+  unsafe fn f() -> ! {
+      let mut t = 2usize;
+      for _ in 0..PER_THREAD {
+          let a = &mut A as *mut usize;    // “缓慢执行”A=A+1
+          let cur = a.read_volatile();     // “缓慢执行”A=A+1
+          for _ in 0..500 {  t = t * t % 10007; } // 增加切换概率
+          a.write_volatile(cur + 1);      // “缓慢执行”A=A+1
+      }
+      exit(t as i32)
+  }
+  ```
+  ```
+  >> race_adder
+  time cost is 31ms
+  Panicked at src/bin/race_adder.rs:40, assertion failed: `(left == right)`
+    left: `15788`,
+  right: `16000`
+  [kernel] Aborted, SIGABRT=6
+  ```
+  每次都会执行都会出现Race Condition（竞争条件）
+- 基于原子操作的全局变量累加问题的多线程应用 `race_adder_atomic.rs`
+  ```rust
+  unsafe fn f() -> ! {
+      for _ in 0..PER_THREAD {
+          while OCCUPIED
+              .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+              .is_err()  {  yield_(); }           // 基于CAS操作的近似spin lock操作
+          let a = &mut A as *mut usize;           // “缓慢执行”A=A+1
+          let cur = a.read_volatile();            // “缓慢执行”A=A+1
+          for _ in 0..500 { t = t * t % 10007; }  // 增加切换概率
+          a.write_volatile(cur + 1);              // “缓慢执行”A=A+1
+          OCCUPIED.store(false, Ordering::Relaxed);  // unlock操作
+      }
+      ...
+  ```
+  ```
+  >> race_adder_atomic
+  time cost is 29ms
+  >> race_adder_loop
+  ```
+  可以看到，执行速度快，且正确。
+- 基于互斥锁的多线程应用 `race_adder_mutex_[spin|block]`
+  ```rust
+  unsafe fn f() -> ! {
+      let mut t = 2usize;
+      for _ in 0..PER_THREAD {
+          mutex_lock(0); //lock(id)
+          let a = &mut A as *mut usize;   // “缓慢执行”A=A+1
+          let cur = a.read_volatile();    // “缓慢执行”A=A+1
+          for _ in 0..500 {  t = t * t % 10007; } // 增加切换概率
+          a.write_volatile(cur + 1);      // “缓慢执行”A=A+1
+          mutex_unlock(0); //unlock(id)
+      }
+      exit(t as i32)
+  }
+  ```
+  基于互斥锁的全局变量累加问题的多线程应用 `race_adder_mutex_spin`
+  ```
+  >> race_adder_mutex_spin
+  time cost is 249ms
+  # 执行系统调用，且进行在就绪队列上的取出/插入/等待操作
+  ```
+  基于互斥锁的全局变量累加问题的多线程应用 `race_adder_mutex_spin`
+  ```
+  >> race_adder_mutex_blocking
+  time cost is 919ms
+  # 执行系统调用，且进行在就绪队列+等待队列上的取出/插入/等待操作
+  ```
+
+=== 互斥锁
+
+*程序设计*
+- `spin mutex` 和 `block mutex` 的核心数据结构（全局变量）： `UPSafeCell`
+  ```rust
+  pub struct UPSafeCell<T> { //允许在单核上安全**使用可变全局变量**
+      inner: RefCell<T>,  //提供内部可变性和运行时借用检查
+  }
+  unsafe impl<T> Sync for UPSafeCell<T> {} //声明支持全局变量安全地在线程间共享
+  impl<T> UPSafeCell<T> {
+      pub unsafe fn new(value: T) -> Self {
+          Self { inner: RefCell::new(value) }
+      }
+      pub fn exclusive_access(&self) -> RefMut<'_, T> {
+          self.inner.borrow_mut()  //得到它包裹的数据的独占访问权
+      }
+  }
+
+  pub struct MutexSpin {
+      locked: UPSafeCell<bool>,  //locked是被UPSafeCell包裹的布尔全局变量
+  }
+  pub struct MutexBlocking {
+      inner: UPSafeCell<MutexBlockingInner>,
+  }
+  pub struct MutexBlockingInner {
+      locked: bool,
+      wait_queue: VecDeque<Arc<TaskControlBlock>>, //等待获取锁的线程等待队列
+  }
+  ```
+  `spin mutex`的相关函数
+  ```rust
+  pub trait Mutex: Sync + Send { //Send表示跨线程 move，Sync表示跨线程share data
+      fn lock(&self);
+      fn unlock(&self);
+  }
+
+      fn unlock(&self) {
+          let mut locked = self.locked.exclusive_access(); //独占访问locked
+          *locked = false; //
+      }
+
+  impl Mutex for MutexSpin {
+      fn lock(&self) {
+          loop {
+              let mut locked = self.locked.exclusive_access(); //独占访问locked
+              if *locked {
+                  drop(locked);
+                  suspend_current_and_run_next(); //把当前线程放到就绪队列末尾
+                  continue;
+              } else {
+                  *locked = true; //得到锁了，可以继续进入临界区执行
+                  return;
+          ...
+  ```
+  `block mutex`的相关函数
+  ```rust
+  impl Mutex for MutexBlocking {
+      fn lock(&self) {
+          let mut mutex_inner = self.inner.exclusive_access(); //独占访问mutex_inner
+          if mutex_inner.locked {
+              //把当前线程挂到此lock相关的等待队列中
+              mutex_inner.wait_queue.push_back(current_task().unwrap());
+              drop(mutex_inner);
+              //把当前线程从就绪队列中取出，设置为阻塞态，切换到另一就绪线程执行
+              block_current_and_run_next();
+          } else {
+              mutex_inner.locked = true; //得到锁了，可以继续进入临界区执行
+          }
+      }
+      fn unlock(&self) {
+          let mut mutex_inner = self.inner.exclusive_access();
+          assert!(mutex_inner.locked);
+          //从等待队列中取出线程，并放入到就绪队列中
+          if let Some(waking_task) = mutex_inner.wait_queue.pop_front() {
+              add_task(waking_task);
+          } else {
+              mutex_inner.locked = false; //释放锁
+          }
+      }
+  ```
+
+=== 信号量
+
+*实践步骤*
+- 基于信号量的多线程应用 `sync_sem`
+  ```rust
+  pub fn main() -> i32 {
+      // create semaphores
+      assert_eq!(semaphore_create(0) as usize, SEM_SYNC);
+      // create threads
+      let threads = vec![
+          thread_create(first as usize, 0),
+          thread_create(second as usize, 0),
+      ];
+      // wait for all threads to complete
+      for thread in threads.iter() {
+          waittid(*thread as usize);
+      }
+  ...
+  unsafe fn first() -> ! {
+      sleep(10);
+      println!("First work and wakeup Second");
+      semaphore_up(SEM_SYNC);
+      exit(0)
+  }
+  unsafe fn second() -> ! {
+      println!("Second want to continue,but need to wait first");
+      semaphore_down(SEM_SYNC);
+      println!("Second can work now");
+      exit(0)
+  }
+  ```
+  ```
+  >> sync_sem
+  Second want to continue,but need to wait first
+  First work and wakeup Second
+  Second can work now
+  sync_sem passed!
+  ```
+  - 信号量初值设为0
+  - semaphore_down() ：线程会挂起/阻塞（suspend/block）
+  - semaphore_up()：会唤醒挂起的线程
+
+*程序设计*
+- `semaphore`的核心数据结构
+  ```rust
+  pub struct Semaphore {
+      pub inner: UPSafeCell<SemaphoreInner>, //UPSafeCell包裹的内部可变结构
+  }
+
+  pub struct SemaphoreInner {
+      pub count: isize, //信号量的计数值
+      pub wait_queue: VecDeque<Arc<TaskControlBlock>>, //信号量的等待队列
+  }
+  ```
+  semaphore的相关函数
+  ```rust
+      pub fn down(&self) {
+        let mut inner = self.inner.exclusive_access();
+        inner.count -= 1; //信号量的计数值减一
+        if inner.count < 0 {
+            inner.wait_queue.push_back(current_task().unwrap()); //放入等待队列
+            drop(inner);
+            //把当前线程从就绪队列中取出，设置为阻塞态，切换到另一就绪线程执行
+            block_current_and_run_next();
+        }
+    }
+      pub fn up(&self) {
+        let mut inner = self.inner.exclusive_access();
+        inner.count += 1;//信号量的计数值加一
+        if inner.count <= 0 {
+            //从等待队列中取出线程，并放入到就绪队列中
+            if let Some(task) = inner.wait_queue.pop_front() {
+                add_task(task);
+            }
+        }
+    }
+  ```
+
+=== 管程与条件变量
+
+*实践步骤*
+- 基于互斥锁和条件变量的多线程应用`test_condvar`
+  ```rust
+  pub fn main() -> i32 {
+      // create condvar & mutex
+      assert_eq!(condvar_create() as usize, CONDVAR_ID);
+      assert_eq!(mutex_blocking_create() as usize, MUTEX_ID);
+      // create threads
+      let threads = vec![ thread_create(first as usize, 0),
+                          thread_create(second as usize, 0),];
+      // wait for all threads to complete
+      for thread in threads.iter() {
+          waittid(*thread as usize);
+      }
+      ...
+
+  unsafe fn second() -> ! {
+      println!("Second want to continue,but need to wait A=1");
+      mutex_lock(MUTEX_ID);
+      while A == 0 {
+          println!("Second: A is {}", A);
+          condvar_wait(CONDVAR_ID, MUTEX_ID);
+      }
+      mutex_unlock(MUTEX_ID);
+      println!("A is {}, Second can work now", A);
+      exit(0)
+  }
+  unsafe fn first() -> ! {
+      sleep(10);
+      println!("First work, Change A --> 1 and wakeup Second");
+      mutex_lock(MUTEX_ID);
+      A = 1;
+      condvar_signal(CONDVAR_ID);
+      mutex_unlock(MUTEX_ID);
+      exit(0)
+  }
+  ```
+  ```
+  >> test_condvar
+  Second: A is 0
+  First work, Change A --> 1 and wakeup Second
+  A is 1, Second can work now
+  ```
+  - second先执行，但由于A==0，使得等在条件变量上
+  - first后执行，但会先于second，并通过条件变量唤醒second
+*程序设计*
+- `condvar`的核心数据结构
+  ```rust
+  pub struct Condvar {
+      pub inner: UPSafeCell<CondvarInner>, //UPSafeCell包裹的内部可变结构
+  }
+
+  pub struct CondvarInner {
+      pub wait_queue: VecDeque<Arc<TaskControlBlock>>,//等待队列
+  }
+  ```
+  `condvar`的相关函数
+  ```rust
+      pub fn wait(&self, mutex: Arc<dyn Mutex>) {
+          mutex.unlock(); //释放锁
+          let mut inner = self.inner.exclusive_access();
+          inner.wait_queue.push_back(current_task().unwrap()); //放入等待队列
+          drop(inner);
+          //把当前线程从就绪队列中取出，设置为阻塞态，切换到另一就绪线程执行
+          block_current_and_run_next();
+          mutex.lock();
+      }
+      pub fn signal(&self) {
+          let mut inner = self.inner.exclusive_access();
+          //从等待队列中取出线程，并放入到就绪队列中
+          if let Some(task) = inner.wait_queue.pop_front() {
+              add_task(task);
+          }
+      }
+  ```
+  `sleep`的设计实现
+  ```rust
+  pub fn sys_sleep(ms: usize) -> isize {
+      let expire_ms = get_time_ms() + ms;
+      let task = current_task().unwrap();
+      add_timer(expire_ms, task);
+      block_current_and_run_next();
+      0
+  }
+  ```
